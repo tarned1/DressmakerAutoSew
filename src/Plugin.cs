@@ -44,7 +44,7 @@ namespace DressmakerAutoSew
         {
             Instance = this;
             Log = Logger;
-
+            
             EnabledEntry = Config.Bind(
                 "Auto Sew",
                 "Enabled",

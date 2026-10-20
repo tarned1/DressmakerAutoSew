@@ -3,3 +3,4 @@ obj/
 dist/
 lib/
 game-unhook-backup/
+.idea/

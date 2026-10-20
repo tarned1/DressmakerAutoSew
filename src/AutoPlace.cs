@@ -9,7 +9,7 @@ namespace DressmakerAutoSew
 {
     public static class AutoPlace
     {
-        const float Cell = 0.002f;
+        const float Cell = 0.003f;
         const int Gap = 1;
         const int NodeBudget = 8000;
         const int MaxGridCells = 64000000;
@@ -29,6 +29,8 @@ namespace DressmakerAutoSew
         static float _bestSpread;
         static Stopwatch _nestClock;
         const int NestBudgetMs = 4000;
+        static readonly Stopwatch _paintClock = new Stopwatch();
+        static readonly Stopwatch _poseClock = new Stopwatch();
 
         // The search uses only occupied/free state; piece IDs were never read.
         // One bit per cell keeps long fresh bolts affordable without coarsening.
@@ -438,18 +440,21 @@ namespace DressmakerAutoSew
 
             // Every order starts from the same occupancy grid.
             List<Vector2Int> initialAnchors = Anchors(blocked, cols, rows);
+            bool first = true;
             foreach (int[] order in Orders(pieces))
             {
                 if (NestTimedOut())
                     break;
                 List<Choice> layout = Greedy(pieces, blocked, cols, rows, order, initialAnchors);
+                Plugin.Log.LogInfo("Greedy: placed " + layout.Count + "/" + pieces.Count + " at " + _nestClock.ElapsedMilliseconds + " ms");
                 Consider(pieces, layout, layout.Count, LayoutLength(pieces, layout));
                 // Try filling the first big-first layout before spending the budget on more orders.
-                if (Best.Count < pieces.Count)
+                if (first && Best.Count < pieces.Count)
                 {
                     List<Choice> filledOrder = FillHoles(pieces, blocked, cols, rows, layout);
                     Consider(pieces, filledOrder, filledOrder.Count, LayoutLength(pieces, filledOrder));
                 }
+                first = false; 
             }
 
             if (pieces.Count <= 3 && !NestTimedOut())
@@ -464,10 +469,15 @@ namespace DressmakerAutoSew
 
             // Anchors only touch bottom-left corners, so curves stay apart.
             // Settle drops each piece into the notch that shortens the bolt.
+            Plugin.Log.LogInfo("Orders done at " + _nestClock.ElapsedMilliseconds + " ms");
             List<Choice> improved = Improve(pieces, blocked, cols, rows, Best);
+            Plugin.Log.LogInfo("Improve done at " + _nestClock.ElapsedMilliseconds + " ms");
+            _paintClock.Reset();
+            _poseClock.Reset();
             List<Choice> settled = Settle(pieces, blocked, cols, rows, improved);
             List<Choice> filled = FillHoles(pieces, blocked, cols, rows, settled);
             List<Choice> packed = Settle(pieces, blocked, cols, rows, filled);
+            Plugin.Log.LogInfo("Improve/Settle/Fill done at " + _nestClock.ElapsedMilliseconds + " ms (repaint " + _paintClock.ElapsedMilliseconds + " ms, pose search " + _poseClock.ElapsedMilliseconds + " ms)");
             _nestClock.Stop();
             Plugin.Log.LogInfo("Pattern nest " + _nestClock.ElapsedMilliseconds + " ms");
             _nestClock = null;
@@ -698,7 +708,7 @@ namespace DressmakerAutoSew
                     // Anchors are sorted by column; later ones cannot improve this edge.
                     if (sortedByColumn && edge > bestLength + 0.0001f)
                         break;
-                    if (!Fits(grid, stamp, anchor.x, anchor.y, cols, rows))
+                    if (!Probe(grid, stamp, anchor.x, anchor.y, cols, rows))
                         continue;
                     if (edge < bestLength - 0.0001f || (Mathf.Abs(edge - bestLength) <= 0.0001f && (anchor.y < bestRow || (anchor.y == bestRow && anchor.x < bestCol))))
                     {
@@ -842,6 +852,7 @@ namespace DressmakerAutoSew
         static bool NestOne(List<Piece> pieces, Grid blocked, int cols, int rows, List<Choice> current, int index, Grid grid, List<int> undo)
         {
             Choice held = current[index];
+            _paintClock.Start();
             blocked.CopyTo(grid);
             undo.Clear();
             float baseLength = 0f;
@@ -856,8 +867,10 @@ namespace DressmakerAutoSew
                 baseLength = Mathf.Max(baseLength, Edge(stamp, other.Col));
                 baseTop = Mathf.Max(baseTop, other.Row + stamp.MaxY);
             }
-
+            _paintClock.Stop();
+            _poseClock.Start();
             NestHit best = SearchPose(pieces[held.Piece], grid, cols, rows, baseLength, baseTop, true, held.Orient, held.Col, held.Row);
+            _poseClock.Stop();
             if (!best.Found || (best.Orient == held.Orient && best.Col == held.Col && best.Row == held.Row))
                 return false;
             current[index] = new Choice { Piece = held.Piece, Orient = best.Orient, Col = best.Col, Row = best.Row };
@@ -927,6 +940,10 @@ namespace DressmakerAutoSew
                         if (reachY < 0)
                             reachY = 0;
                         if (locked && reachY + stamp.MaxY > best.Top)
+                            break;
+                        // When length and top are already as low as possible, only pull (col + row) can win.
+                        bool onlyPull = best.Found && best.Length <= baseLength + 0.0001f && best.Top <= baseTop;
+                        if (onlyPull && reach + reachY >= best.Pull)
                             break;
                         if (!Probe(grid, stamp, x, y, cols, rows))
                             continue;
@@ -1110,8 +1127,9 @@ namespace DressmakerAutoSew
             else
             {
                 var random = new System.Random(17);
+                int maxOrders = count > 12 ? 12 : 80;
                 int guard = 0;
-                while (orders.Count < 80 && guard < 400)
+                while (orders.Count < maxOrders && guard < 400)
                 {
                     guard++;
                     int[] order = Range(count);
@@ -1208,6 +1226,15 @@ namespace DressmakerAutoSew
                     if (limit > 0 && anchors.Count >= limit)
                         return anchors;
                 }
+            }
+            // Always offer the bottom of the first fully empty column,
+            // so a piece can go onto fresh cloth past everything placed.
+            int open = grid.LastOccupiedCol + 1;
+            if (open < cols && grid[open] == 0)
+            {
+                var spot = new Vector2Int(open, 0);
+                if (!anchors.Contains(spot))
+                    anchors.Add(spot);
             }
             return anchors;
         }
