@@ -423,7 +423,7 @@ namespace DressmakerAutoSew
                 if (task.IsFaulted)
                     throw task.Exception.GetBaseException();
                 
-                Plugin.Log.LogInfo("Search finished; placing pieces.");
+                Plugin.Log.LogDebug("Search finished; placing pieces.");
                 if (room == null || !room.isActiveAndEnabled)
                 {
                     _notice = "Placement cancelled because you left the cutting room.";
@@ -542,7 +542,7 @@ namespace DressmakerAutoSew
                 if (NestTimedOut())
                     break;
                 List<Choice> layout = Greedy(pieces, blocked, cols, rows, order, initialAnchors);
-                Plugin.Log.LogInfo("Greedy: placed " + layout.Count + "/" + pieces.Count + " at " + _nestClock.ElapsedMilliseconds + " ms");
+                Plugin.Log.LogDebug("Greedy: placed " + layout.Count + "/" + pieces.Count + " at " + _nestClock.ElapsedMilliseconds + " ms");
                 Consider(pieces, layout, layout.Count, LayoutLength(pieces, layout));
                 // Try filling the first big-first layout before spending the budget on more orders.
                 if (first && Best.Count < pieces.Count)
@@ -565,17 +565,17 @@ namespace DressmakerAutoSew
 
             // Anchors only touch bottom-left corners, so curves stay apart.
             // Settle drops each piece into the notch that shortens the bolt.
-            Plugin.Log.LogInfo("Orders done at " + _nestClock.ElapsedMilliseconds + " ms");
+            Plugin.Log.LogDebug("Orders done at " + _nestClock.ElapsedMilliseconds + " ms");
             List<Choice> improved = Improve(pieces, blocked, cols, rows, Best);
-            Plugin.Log.LogInfo("Improve done at " + _nestClock.ElapsedMilliseconds + " ms");
+            Plugin.Log.LogDebug("Improve done at " + _nestClock.ElapsedMilliseconds + " ms");
             _paintClock.Reset();
             _poseClock.Reset();
             List<Choice> settled = Settle(pieces, blocked, cols, rows, improved);
             List<Choice> filled = FillHoles(pieces, blocked, cols, rows, settled);
             List<Choice> packed = Settle(pieces, blocked, cols, rows, filled);
-            Plugin.Log.LogInfo("Improve/Settle/Fill done at " + _nestClock.ElapsedMilliseconds + " ms (repaint " + _paintClock.ElapsedMilliseconds + " ms, pose search " + _poseClock.ElapsedMilliseconds + " ms)");
+            Plugin.Log.LogDebug("Improve/Settle/Fill done at " + _nestClock.ElapsedMilliseconds + " ms (repaint " + _paintClock.ElapsedMilliseconds + " ms, pose search " + _poseClock.ElapsedMilliseconds + " ms)");
             _nestClock.Stop();
-            Plugin.Log.LogInfo("Pattern nest " + _nestClock.ElapsedMilliseconds + " ms");
+            Plugin.Log.LogDebug("Pattern nest " + _nestClock.ElapsedMilliseconds + " ms");
             _nestClock = null;
             Consider(pieces, packed, packed.Count, LayoutLength(pieces, packed));
             return new List<Choice>(Best);
@@ -1412,7 +1412,7 @@ namespace DressmakerAutoSew
                 PaintPlaced(grid, cols, rows, panel, left, bottom);
             }
 
-            Plugin.Log.LogInfo("Layout cloth bounds: left=" + left + ", bottom=" + bottom
+            Plugin.Log.LogDebug("Layout cloth bounds: left=" + left + ", bottom=" + bottom
                 + ", length=" + length + ", height=" + height);
             // Assembly-CSharp: these are stationary hole masks created by
             // SetupCutout, not the movable PatternPanel fabric representation.
