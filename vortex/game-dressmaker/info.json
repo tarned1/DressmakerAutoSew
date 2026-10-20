@@ -1,0 +1,6 @@
+{
+  "name": "Game: Dressmaker",
+  "author": "local",
+  "version": "1.1.0",
+  "description": "Vortex support for Dressmaker (Steam 4019220). Installs BepInEx 5.4.23.5, which this Unity 6 build needs, and deploys BepInEx plugins to BepInEx/plugins."
+}
