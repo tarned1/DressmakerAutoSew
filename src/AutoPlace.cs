@@ -110,6 +110,7 @@ namespace DressmakerAutoSew
             public int MaxY;
             public Vector2Int[] Left;
             public Vector2Int[] Down;
+            public Vector2Int[] Halo;
         }
 
         sealed class Piece
@@ -1272,25 +1273,17 @@ namespace DressmakerAutoSew
         static void Expand(Grid grid, int cols, Stamp stamp, int col, int row, List<int> undo)
         {
             int rows = grid.Length / cols;
-            foreach (Vector2Int cell in stamp.Cells)
+            foreach (Vector2Int cell in stamp.Halo)
             {
-                for (int dy = -Gap; dy <= Gap; dy++)
-                {
-                    for (int dx = -Gap; dx <= Gap; dx++)
-                    {
-                        if (dx == 0 && dy == 0)
-                            continue;
-                        int x = col + cell.x + dx;
-                        int y = row + cell.y + dy;
-                        if (x < 0 || y < 0 || x >= cols || y >= rows)
-                            continue;
-                        int index = y * cols + x;
-                        if (grid[index] != 0)
-                            continue;
-                        grid[index] = 1;
-                        undo.Add(index);
-                    }
-                }
+                int x = col + cell.x;
+                int y = row + cell.y;
+                if (x < 0 || y < 0 || x >= cols || y >= rows)
+                    continue;
+                int index = y * cols + x;
+                if (grid[index] != 0)
+                    continue;
+                grid[index] = 1;
+                undo.Add(index);
             }
         }
 
@@ -1502,6 +1495,24 @@ namespace DressmakerAutoSew
                 if (cell.y == 0 || !solid[(cell.y - 1) * width + cell.x])
                     down.Add(cell);
             }
+            var halo = new HashSet<Vector2Int>();
+            int height = maxCellY + 1;
+            foreach (Vector2Int c in packed)
+            {
+                for (int dy = -Gap; dy <= Gap; dy++)
+                {
+                    for (int dx = -Gap; dx <= Gap; dx++)
+                    {
+                        int x = c.x + dx;
+                        int y = c.y + dy;
+                        bool insidePiece = x >= 0 && y >= 0 && x < width && y < height && solid[y * width + x];
+                        if (!insidePiece)
+                            halo.Add(new Vector2Int(x, y));
+                    }
+                }
+            }
+            var haloArray = new Vector2Int[halo.Count];
+            halo.CopyTo(haloArray);
             return new Stamp
             {
                 Rotation = rotation,
@@ -1510,6 +1521,7 @@ namespace DressmakerAutoSew
                 MaxY = maxCellY,
                 Left = left.ToArray(),
                 Down = down.ToArray(),
+                Halo = haloArray,
                 PadX = 0,
                 PadY = 0,
                 VisualW = Mathf.Max(Cell, maxX - minX),
