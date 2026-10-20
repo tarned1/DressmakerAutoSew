@@ -16,9 +16,22 @@ namespace DressmakerAutoSew
         const int MaxGridCells = 64000000;
         static bool _solving;
         static bool _searchLimited;
-        static MonoBehaviour _host;
         static int _lastBeat;
         static Task _searchTask;
+        
+        static AutoSewRunner _runner;
+
+        static MonoBehaviour Runner()
+        {
+            if (_runner == null)
+            {
+                var go = new GameObject("AutoSew Runner");
+                UnityEngine.Object.DontDestroyOnLoad(go);
+                go.hideFlags = HideFlags.HideAndDontSave;
+                _runner = go.AddComponent<AutoSewRunner>();
+            }
+            return _runner;
+        }
 
         static readonly Dictionary<int, object> Assign = new Dictionary<int, object>();
         static readonly HashSet<int> Decided = new HashSet<int>();
@@ -214,7 +227,6 @@ namespace DressmakerAutoSew
                 return;
             _solving = true;
             _searchLimited = false;
-            _host = room;
             var saved = new List<SavedPose>();
             try
             {
@@ -238,7 +250,7 @@ namespace DressmakerAutoSew
                 return;
             }
             _notice = "Placing patterns...";
-            room.StartCoroutine(Guarded(
+            Runner().StartCoroutine(Guarded(
                 Solve(room, game, fabrics, patterns, showFabric, optimize),
                 ex => Restore(room, showFabric, saved, ex),
                 Finish));
@@ -307,7 +319,7 @@ namespace DressmakerAutoSew
             {
                 _nestClock = null;
                 _solving = false;
-                _host = null;
+                PlaceBoard.Refresh();
             }
 
         static IEnumerator Solve(MonoBehaviour room, object game, List<object> fabrics, List<object> patterns, object showFabric, bool optimize)
@@ -410,6 +422,14 @@ namespace DressmakerAutoSew
                     yield return null;
                 if (task.IsFaulted)
                     throw task.Exception.GetBaseException();
+                
+                Plugin.Log.LogInfo("Search finished; placing pieces.");
+                if (room == null || !room.isActiveAndEnabled)
+                {
+                    _notice = "Placement cancelled because you left the cutting room.";
+                    Plugin.Log.LogInfo("Left the cutting room; placement cancelled.");
+                    yield break;
+                }
 
                 // The player kept playing during the search. Make sure nothing changed under us.
                 foreach (Piece p in pieces)
@@ -2174,6 +2194,8 @@ namespace DressmakerAutoSew
             }
             return false;
         }
-
+        
     }
+    // A hidden object only AutoSew uses, so the game can't stop our coroutines.
+    sealed class AutoSewRunner : MonoBehaviour { }
 }

@@ -408,7 +408,11 @@ namespace DressmakerAutoSew
                 _tab.SetActive(false);
             RestoreTabs();
         }
-
+        
+        public static void Refresh()
+        {
+            _stamp = "";
+        }
         static void Rebuild(MonoBehaviour sidebar)
         {
             if (_list == null)
