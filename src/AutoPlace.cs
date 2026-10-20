@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using HarmonyLib;
 using UnityEngine;
+using System.Threading.Tasks;
 
 namespace DressmakerAutoSew
 {
@@ -15,6 +16,9 @@ namespace DressmakerAutoSew
         const int MaxGridCells = 64000000;
         static bool _solving;
         static bool _searchLimited;
+        static MonoBehaviour _host;
+        static int _lastBeat;
+        static Task _searchTask;
 
         static readonly Dictionary<int, object> Assign = new Dictionary<int, object>();
         static readonly HashSet<int> Decided = new HashSet<int>();
@@ -197,33 +201,80 @@ namespace DressmakerAutoSew
 
         static void RunPlacement(MonoBehaviour room, object game, List<object> fabrics, List<object> patterns, object showFabric, bool optimize)
         {
+            // A routine that hasn't checked in for a few frames was stopped by Unity
+            // (e.g. the player left the cutting room). Recover, but only after its
+            // background search has finished, so two searches never run at once.
+            if (_solving && Time.frameCount - _lastBeat > 2
+                         && (_searchTask == null || _searchTask.IsCompleted))
+            {
+                Finish();
+                _notice = "";
+            }
             if (_solving)
                 return;
             _solving = true;
             _searchLimited = false;
+            _host = room;
             var saved = new List<SavedPose>();
             try
             {
                 Plugin.Log.LogInfo("Layout requested: " + (optimize ? "Optimize" : "Solve"));
                 // A button may retain a stale list after the player cuts a piece.
                 patterns = UncutPatterns(patterns);
+                foreach (object panel in patterns)
                 {
-                    foreach (object panel in patterns)
-                    {
-                        var world = GameAccess.Member(panel, "WorldObj") as GameObject;
-                        saved.Add(new SavedPose { Panel = panel, World = world,
-                                Position = world != null ? world.transform.position : Vector3.zero,
-                                Rotation = world != null ? world.transform.rotation : Quaternion.identity,
-                                Fabric = GameAccess.Member(panel, "lastPlacedOn"),
-                                InWorld = GameAccess.Bool(panel, "IsWorld3D") });
-                    }
+                    var world = GameAccess.Member(panel, "WorldObj") as GameObject;
+                    saved.Add(new SavedPose { Panel = panel, World = world,
+                            Position = world != null ? world.transform.position : Vector3.zero,
+                            Rotation = world != null ? world.transform.rotation : Quaternion.identity,
+                            Fabric = GameAccess.Member(panel, "lastPlacedOn"),
+                            InWorld = GameAccess.Bool(panel, "IsWorld3D") });
                 }
-                Solve(room, game, fabrics, patterns, showFabric, optimize);
             }
             catch (Exception ex)
             {
+                Restore(room, showFabric, saved, ex);
+                Finish();
+                return;
+            }
+            _notice = "Placing patterns...";
+            room.StartCoroutine(Guarded(
+                Solve(room, game, fabrics, patterns, showFabric, optimize),
+                ex => Restore(room, showFabric, saved, ex),
+                Finish));
+        }
+
+            // Runs a coroutine step by step, catching errors that a try/catch
+            // around yield can't. Always calls onDone at the end.
+            static IEnumerator Guarded(IEnumerator inner, Action<Exception> onError, Action onDone)
+            {
+                while (true)
+                {
+                    _lastBeat = Time.frameCount;
+                    object current;
+                    try
+                    {
+                        if (!inner.MoveNext())
+                            break;
+                        current = inner.Current;
+                    }
+                    catch (Exception ex)
+                    {
+                        onError(ex);
+                        break;
+                    }
+                    yield return current;
+                }
+                onDone();
+            }
+
+            static void Restore(MonoBehaviour room, object showFabric, List<SavedPose> saved, Exception ex)
+            {
                 foreach (SavedPose pose in saved)
                 {
+                    // The player may have cut a piece while the search ran.
+                    if (!IsUncutPattern(pose.Panel))
+                        continue;
                     try
                     {
                         if (pose.InWorld)
@@ -251,14 +302,15 @@ namespace DressmakerAutoSew
                     Plugin.Log.LogWarning("Could not restore the displayed fabric: " + restore.GetBaseException().Message);
                 }
             }
-            finally
+
+            static void Finish()
             {
                 _nestClock = null;
                 _solving = false;
+                _host = null;
             }
-        }
 
-        static void Solve(MonoBehaviour room, object game, List<object> fabrics, List<object> patterns, object showFabric, bool optimize)
+        static IEnumerator Solve(MonoBehaviour room, object game, List<object> fabrics, List<object> patterns, object showFabric, bool optimize)
         {
             int placed = 0;
             int unplaced = 0;
@@ -285,7 +337,7 @@ namespace DressmakerAutoSew
             {
                 _notice = "Choose the patterns to place on a fabric.";
                 Plugin.Log.LogInfo(_notice);
-                return;
+                yield break;
             }
 
             foreach (object fabric in fabrics)
@@ -346,10 +398,33 @@ namespace DressmakerAutoSew
                     if (!validBaseline)
                         invalidLayouts++;
                 }
-                List<Choice> layout = optimize
-                    ? SearchFromSeed(pieces, grid, cols, rows, seed)
-                    : Search(pieces, grid, cols, rows);
+                // Run the search on another thread so the game keeps drawing frames.
+                List<Choice> layout = null;
+                Task task = _searchTask = Task.Run(() =>
+                {
+                    layout = optimize
+                        ? SearchFromSeed(pieces, grid, cols, rows, seed)
+                        : Search(pieces, grid, cols, rows);
+                });
+                while (!task.IsCompleted)
+                    yield return null;
+                if (task.IsFaulted)
+                    throw task.Exception.GetBaseException();
+
+                // The player kept playing during the search. Make sure nothing changed under us.
+                foreach (Piece p in pieces)
+                {
+                    if (!IsUncutPattern(p.Panel))
+                    {
+                        _notice = "Patterns changed while placing. Press Solve again.";
+                        Plugin.Log.LogInfo(_notice);
+                        yield break;
+                    }
+                }
+                // Re-read the cloth in case other pieces were moved, then validate against it.
+                grid = Blocked(room, fabric, patterns, left, bottom, length, height, out cols, out rows);
                 layout = ValidateLayout(pieces, grid, cols, rows, layout);
+                
                 if (optimize && validBaseline && !ImprovesBaseline(layout.Count, LayoutLength(pieces, layout), seed.Count, baselineLength))
                 {
                     // Preserve exact manual transforms, including sub-cell offsets.
