@@ -31,8 +31,12 @@
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.CoreModule">
-      <HintPath>$(DressmakerManaged)/UnityEngine.CoreModule.dll</HintPath>
-      <Private>false</Private>
+  	<HintPath>$(DressmakerManaged)/UnityEngine.CoreModule.dll</HintPath>
+  	<Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.Physics2DModule">
+  	<HintPath>$(DressmakerManaged)/UnityEngine.Physics2DModule.dll</HintPath>
+  	<Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.PhysicsModule">
       <HintPath>$(DressmakerManaged)/UnityEngine.PhysicsModule.dll</HintPath>

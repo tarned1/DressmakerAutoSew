@@ -18,9 +18,118 @@ namespace DressmakerAutoSew
         static bool _searchLimited;
         static int _lastBeat;
         static Task _searchTask;
+        static bool _lengthCapped;
+        static bool _mustFinish;
         
         static AutoSewRunner _runner;
 
+        static readonly List<Collider2D> _hits = new List<Collider2D>();
+        static ContactFilter2D _clearanceFilter;
+        private static bool _filterReady;
+       
+        // True when no allowed orientation of the piece fits across the fabric's width,
+        // so no amount of extra length or trimming will ever help.
+        static bool TooWide(Piece piece, int rows)
+        {
+            foreach (Stamp stamp in piece.Orients)
+                if (stamp.MaxY < rows)
+                    return false;
+            return true;
+        }
+        
+        // The exact test PatternPanel.Update uses for the orange warning:
+        // does this piece's outline overlap the fabric edges, another piece or a cut hole?
+        static bool TooClose(object panel)
+        {
+            var col = GameAccess.Member(panel, "PatternCollider") as Collider2D;
+            if (col == null)
+                return false;
+            if (!_filterReady)
+            {
+                _clearanceFilter = new ContactFilter2D();
+                _clearanceFilter.useLayerMask = true;
+                _clearanceFilter.layerMask = LayerMask.GetMask("Bounds", "Default", "Cutout");
+                _filterReady = true;
+            }
+
+            Physics2D.SyncTransforms();
+            int count = col.Overlap(_clearanceFilter, _hits);
+            for (int i = 0; i < count; i++)
+            {
+                // The cover past the fabric's right end may still be mid-unroll. Snap only moves
+                // pieces left or down, so it can never cross that end anyway.
+                Transform parent = _hits[i].transform.parent;
+                if (parent != null && parent.name == "FabricPieceLengthObscure")
+                    continue;
+                return true;
+            }
+            return false;
+        }
+        
+        const int SnapMaxSteps = 40;
+
+        // Directions a piece may slide. Every one moves it left or down,
+        // so pieces only ever travel toward the start of the bolt.
+        static readonly Vector3[] SnapDirs = BuildSnapDirs();
+
+        static Vector3[] BuildSnapDirs()
+        {
+            var dirs = new List<Vector3> { Vector3.left };
+            for (int a = 15; a <= 75; a += 15)
+            {
+                float r = a * Mathf.Deg2Rad;
+                dirs.Add(new Vector3(-Mathf.Cos(r), -Mathf.Sin(r), 0f)); // below left
+                dirs.Add(new Vector3(-Mathf.Cos(r),  Mathf.Sin(r), 0f)); // above left
+            }
+            dirs.Add(Vector3.down);
+            return dirs.ToArray();
+        }
+
+        // Big steps first to cover distance quickly, then small ones to get really close.
+        static readonly float[] SnapSteps = { 0.005f, 0.001f, 0.0005f };  // 5 mm, 1 mm, 0.5 mm
+
+        // Slide one direction until the game says "too close", then step back once.
+        static bool Slide(object panel, Transform t, Vector3 delta)
+        {
+            int steps = 0;
+            while (steps < SnapMaxSteps)
+            {
+                t.position += delta;
+                if (TooClose(panel))
+                {
+                    t.position -= delta;
+                    break;
+                }
+                steps++;
+            }
+            return steps > 0;
+        }
+
+        // Pull a placed piece left and down as far as the game allows.
+        static void Snap(object panel)
+        {
+            var world = GameAccess.Member(panel, "WorldObj") as GameObject;
+            if (world == null)
+                return;
+            if (TooClose(panel))
+            {
+                Plugin.Log.LogDebug("Snap: blocked before moving, touching " + _hits[0].name
+                                                                             + " (parent: " + (_hits[0].transform.parent != null ? _hits[0].transform.parent.name : "none")
+                                                                             + ", own piece: " + _hits[0].transform.IsChildOf(world.transform) + ")");
+                return;
+            }
+            Transform t = world.transform;
+            for (int round = 0; round < 6; round++)
+            {
+                bool moved = false;
+                foreach (float step in SnapSteps)
+                foreach (Vector3 dir in SnapDirs)
+                    moved |= Slide(panel, t, dir * step);
+                if (!moved)
+                    break;
+            }
+        }
+        
         static MonoBehaviour Runner()
         {
             if (_runner == null)
@@ -45,7 +154,7 @@ namespace DressmakerAutoSew
         static float _bestTop;
         static float _bestSpread;
         static Stopwatch _nestClock;
-        const int NestBudgetMs = 4000;
+        static int NestBudgetMs = 4000;
         static readonly Stopwatch _paintClock = new Stopwatch();
         static readonly Stopwatch _poseClock = new Stopwatch();
 
@@ -227,6 +336,7 @@ namespace DressmakerAutoSew
                 return;
             _solving = true;
             _searchLimited = false;
+            _lengthCapped = false;
             var saved = new List<SavedPose>();
             try
             {
@@ -326,6 +436,9 @@ namespace DressmakerAutoSew
         {
             int placed = 0;
             int unplaced = 0;
+            int needTrim = 0;
+            int tooShort = 0;
+            int tooWide = 0;
             int chosen = 0;
             int improvedFabrics = 0;
             int retainedFabrics = 0;
@@ -362,7 +475,8 @@ namespace DressmakerAutoSew
                 }
                 if (mine.Count == 0)
                     continue;
-
+                
+                _lengthCapped = false;
                 ShowFabric(room, fabric);
                 if (!Cloth(room, fabric, out float left, out float bottom, out float length, out float height))
                 {
@@ -372,7 +486,8 @@ namespace DressmakerAutoSew
                     unplaced += mine.Count;
                     continue;
                 }
-
+                
+                bool capped = _lengthCapped;
                 var pieces = new List<Piece>();
                 var rejected = new List<object>();
                 foreach (object panel in mine)
@@ -456,6 +571,7 @@ namespace DressmakerAutoSew
                 if (optimize)
                     improvedFabrics++;
                 var kept = new HashSet<int>();
+                var placedPanels = new List<object>();
                 float used = 0f;
                 for (int i = 0; i < layout.Count; i++)
                 {
@@ -470,6 +586,7 @@ namespace DressmakerAutoSew
                         || !visibleWorld.activeInHierarchy)
                         throw new InvalidOperationException("A placed pattern became hidden; restoring the previous layout.");
                     kept.Add(choice.Piece);
+                    placedPanels.Add(piece.Panel);
                     used = Mathf.Max(used, Edge(stamp, choice.Col));
                     placed++;
                 }
@@ -480,12 +597,33 @@ namespace DressmakerAutoSew
                         continue;
                     ReturnToMenu(pieces[i].Panel);
                     unplaced++;
+                    if (TooWide(pieces[i], rows))
+                        tooWide++;
+                    else if (capped)
+                        needTrim++;
+                    else
+                        tooShort++;
                 }
                 foreach (object panel in rejected)
                 {
                     ReturnToMenu(panel);
                     unplaced++;
                 }
+                // Polish: pull pieces together as far as the game's own clearance check allows.
+                // Left-most first, so each piece slides toward neighbours that have already settled.
+                var snapClock = Stopwatch.StartNew();
+                placedPanels.Sort((a, b) =>
+                {
+                    var wa = GameAccess.Member(a, "WorldObj") as GameObject;
+                    var wb = GameAccess.Member(b, "WorldObj") as GameObject;
+                    float xa = wa != null ? wa.transform.position.x : 0f;
+                    float xb = wb != null ? wb.transform.position.x : 0f;
+                    return xa.CompareTo(xb);
+                });
+                for (int pass = 0; pass < 2; pass++)
+                    foreach (object panel in placedPanels)
+                        Snap(panel);
+                Plugin.Log.LogDebug("Snap " + snapClock.ElapsedMilliseconds + " ms");
                 usedByFabric[fabric] = used;
             }
 
@@ -503,15 +641,25 @@ namespace DressmakerAutoSew
                 if (unplaced > 0)
                     _notice += " " + unplaced + " patterns remain unplaced.";
                 if (invalidLayouts > 0)
-                    _notice += " Overlapping or out-of-bounds placements were detected; unsupported geometry was kept unchanged.";
+                    _notice += " Some pieces sit closer than the planner's grid, so their exact positions were re-planned.";
                 if (_searchLimited)
                     _notice += " The search reached its time limit.";
             }
             else if (unplaced > 0)
             {
-                string noun = unplaced == 1 ? "pattern hasn't" : "patterns haven't";
-                _notice = unplaced + " " + noun + " been placed."
-                    + (_searchLimited ? " The search reached its time limit." : " No suitable position was found.");
+                var parts = new List<string>();
+                if (needTrim > 0)
+                    parts.Add(needTrim + " need more open fabric: cut the placed pieces, then trim the fabric");
+                if (tooShort > 0)
+                    parts.Add(tooShort + " don't fit: this fabric is too short");
+                if (tooWide > 0)
+                    parts.Add(tooWide + (tooWide == 1 ? " is" : " are") + " too wide for this fabric");
+                int other = unplaced - needTrim - tooShort - tooWide;
+                if (other > 0)
+                    parts.Add(other + " couldn't be placed");
+                _notice = "Placed " + placed + ". " + string.Join(". ", parts) + ".";
+                if (_searchLimited)
+                    _notice += " (Layout could be tighter: the search ran out of time.)";
             }
             else if (placed > 0)
                 _notice = "Placed " + placed + " patterns.";
@@ -530,7 +678,11 @@ namespace DressmakerAutoSew
             _bestSpread = float.MaxValue;
             if (pieces.Count == 0 || cols <= 0 || rows <= 0)
                 return new List<Choice>();
-
+            
+            // Bigger dresses get more time, up to 10 seconds. The search runs in the background,
+            // so the game stays responsive while it works.
+            NestBudgetMs = Mathf.Clamp(4000 + 60 * (pieces.Count - 20), 4000, 10000);
+            
             // Budget the entire search, including greedy orders and backtracking.
             _nestClock = Stopwatch.StartNew();
 
@@ -541,7 +693,9 @@ namespace DressmakerAutoSew
             {
                 if (NestTimedOut())
                     break;
+                _mustFinish = first;
                 List<Choice> layout = Greedy(pieces, blocked, cols, rows, order, initialAnchors);
+                _mustFinish = false;
                 Plugin.Log.LogDebug("Greedy: placed " + layout.Count + "/" + pieces.Count + " at " + _nestClock.ElapsedMilliseconds + " ms");
                 Consider(pieces, layout, layout.Count, LayoutLength(pieces, layout));
                 // Try filling the first big-first layout before spending the budget on more orders.
@@ -989,6 +1143,8 @@ namespace DressmakerAutoSew
 
         static bool NestTimedOut()
         {
+            if (_mustFinish)
+                return false;
             bool expired = _nestClock != null && _nestClock.ElapsedMilliseconds >= NestBudgetMs;
             if (expired)
                 _searchLimited = true;
@@ -1223,7 +1379,7 @@ namespace DressmakerAutoSew
             else
             {
                 var random = new System.Random(17);
-                int maxOrders = count > 12 ? 12 : 80;
+                int maxOrders = count > 40 ? 6 : count > 12 ? 12 : 80;
                 int guard = 0;
                 while (orders.Count < maxOrders && guard < 400)
                 {
@@ -1973,13 +2129,17 @@ namespace DressmakerAutoSew
             float cap = GameAccess.Float(room, "maximumFabricLength", 2f);
             float clothHeight = GameAccess.Float(room, "fabricHeight", 1.3f);
             float start = GameAccess.Float(GameAccess.Member(room, "FabricUsageCounter"), "FabricStartOffset", 0f);
+            // Only part of a long bolt is open on the table at once (the game's own rule:
+            // open = Min(remaining, maximumFabricLength)). Never plan past it.
+            float open = owned > 0.2f ? Mathf.Min(owned, cap) : cap;
+            if (owned > cap)
+                _lengthCapped = true;
             const float margin = 0.002f;
             if (renderer != null && renderer.bounds.size.x > 0.2f && renderer.bounds.size.y > 0.2f)
             {
                 Bounds bounds = renderer.bounds;
                 left = Mathf.Max(bounds.min.x, start) + margin;
-                float available = owned > 0.2f ? owned : cap;
-                float right = start + available - margin;
+                float right = Mathf.Min(start + open, bounds.max.x) - margin;
                 bottom = bounds.min.y + margin;
                 length = right - left;
                 height = bounds.size.y - margin * 2f;
@@ -1987,7 +2147,7 @@ namespace DressmakerAutoSew
             else if (fabric != null)
             {
                 left = start + margin;
-                length = (owned > 0.2f ? owned : cap) - margin * 2f;
+                length = open - margin * 2f;
                 bottom = fabric.transform.position.y - clothHeight * 0.5f + margin;
                 height = clothHeight - margin * 2f;
             }

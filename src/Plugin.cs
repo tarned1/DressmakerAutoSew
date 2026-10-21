@@ -14,7 +14,7 @@ namespace DressmakerAutoSew
     {
         public const string Guid = "com.Venus.dressmaker.autosew";
         public const string Name = "Dressmaker Auto Sew";
-        public const string Version = "1.5.19";
+        public const string Version = "1.6.1";
 
         public const float SpeedMin = 0f;
         public const float SpeedMax = 1f;
