@@ -9,16 +9,32 @@ using UnityEngine.UI;
 
 namespace DressmakerAutoSew
 {
+    /// <summary>
+    /// The Automation window in the pause menu, with the switches for every feature and the speed slider.
+    /// Built by cloning the game's own UI: the Language button becomes an "Automation" button, and a copy
+    /// of the Language popup becomes the Automation window, so it matches the game's style.
+    /// </summary>
     public static class PauseMenuOptions
     {
+        /// <summary>
+        /// Names given to our cloned objects, so they can be found again later.
+        /// </summary>
         const string ButtonName = "AutoSewMenuButton";
         const string PanelName = "AutoSewPanel";
         const string ToggleName = "AutoSewToggle";
         const string SliderName = "AutoSewSpeedSlider";
 
+        /// <summary>
+        /// The three extra switches: object names and labels.
+        /// </summary>
         static readonly string[] SwitchNames = { "AutoMeasureToggle", "AutoMannequinToggle", "PlacePatternsToggle" };
         static readonly string[] SwitchLabels = { "Auto measure (F4)", "Auto mannequin (F4)", "Place patterns" };
 
+        /// <summary>
+        /// The window's parts: the Stop (F4) row, the Auto sew switch, the speed slider and its row, the
+        /// window itself, and the three feature switches. _refreshing stops our own updates from
+        /// triggering change handlers.
+        /// </summary>
         static GameObject _stopRow;
         static Toggle _toggle;
         static Slider _slider;
@@ -28,6 +44,10 @@ namespace DressmakerAutoSew
         static bool _refreshing;
         static bool _buttonPlaced;
 
+        /// <summary>
+        /// Harmony postfix on PauseMenu.OnEnable (the pause menu opened): makes sure the Automation button
+        /// and window exist, keeps the window closed, and syncs the controls.
+        /// </summary>
         public static void OnEnablePostfix(MonoBehaviour __instance)
         {
             try
@@ -44,12 +64,18 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Harmony postfix on PauseMenu.Hide: closes the window and its shade too.
+        /// </summary>
         // Esc closes the whole pause menu and does not press the dialog's close button.
         public static void HidePostfix()
         {
             Dismiss();
         }
 
+        /// <summary>
+        /// Updates every control to the current settings without firing their change handlers.
+        /// </summary>
         public static void Refresh()
         {
             if (_refreshing || _panel == null || !_panel.activeInHierarchy)
@@ -81,6 +107,10 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Finds the game's sewing-assist switch (a template for switches), music slider (template for the
+        /// slider), Language button and popup, then builds what's missing and adds scrolling to the menu.
+        /// </summary>
         static void Ensure(MonoBehaviour pause)
         {
             var assist = AccessTools.Field(pause.GetType(), "sewingAssistToggle")?.GetValue(pause) as Toggle;
@@ -99,6 +129,10 @@ namespace DressmakerAutoSew
             PauseListScroll.Install(list);
         }
 
+        /// <summary>
+        /// State of the window: the game's Language popup, a text sample for the font, the dark shade,
+        /// the paper background, and the window's measured width and border size.
+        /// </summary>
         static Component _languagePopup;
         static Component _menuType;
         static GameObject _dimmer;
@@ -107,6 +141,11 @@ namespace DressmakerAutoSew
         static float _chrome = 90f;
         static bool _chromeReady;
 
+        /// <summary>
+        /// Creates the Automation window once, as a copy of the Language popup: renames the title, hides
+        /// the language buttons, adds a paper background and our controls, wires the close button and moves
+        /// the shade out. If it already exists, just reconnects to its parts.
+        /// </summary>
         // The language button opens LanguageSelectorPopup, a dialog of its own. Automation uses a copy of that dialog.
         static void EnsureDialog(Component popup, Toggle assist, Slider music)
         {
@@ -160,6 +199,10 @@ namespace DressmakerAutoSew
             _panel = existing.gameObject;
         }
 
+        /// <summary>
+        /// Moves the popup's dark full-screen shade out of the window, so resizing the window doesn't squash
+        /// the shade into a band.
+        /// </summary>
         // Language darkens the whole screen. That shade is a child of the popup, so shrinking the popup squashes it into a band.
         static GameObject LiftDimmer(GameObject root, Transform holder)
         {
@@ -214,6 +257,9 @@ namespace DressmakerAutoSew
             return dimmer.gameObject;
         }
 
+        /// <summary>
+        /// The window's frame: the object between the window root and its content.
+        /// </summary>
         static RectTransform FrameOf(Transform root, Transform holder)
         {
             if (root == null)
@@ -228,6 +274,9 @@ namespace DressmakerAutoSew
             return walk as RectTransform;
         }
 
+        /// <summary>
+        /// Makes the content area a vertical list that grows with its rows.
+        /// </summary>
         static void PrepareHolder(Transform holder)
         {
             if (holder.GetComponent<HorizontalOrVerticalLayoutGroup>() != null || holder.GetComponent<GridLayoutGroup>() != null)
@@ -244,6 +293,9 @@ namespace DressmakerAutoSew
             fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
         }
 
+        /// <summary>
+        /// Changes the window's title from "Language" to "Automation".
+        /// </summary>
         static void Retitle(GameObject root, Transform holder)
         {
             Transform title = FindNamed(root.transform, "TitleText");
@@ -274,6 +326,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Turns off translation scripts on cloned objects, so they don't change our text back.
+        /// </summary>
         static void DisableLocalizers(GameObject root)
         {
             foreach (Component component in root.GetComponentsInChildren<Component>(true))
@@ -284,6 +339,10 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Makes the close button close our window (not the language one), and creates the Stop (F4) row
+        /// from a copy of it.
+        /// </summary>
         static void WireClose(GameObject root)
         {
             Transform close = FindNamed(root.transform, "CloseButton");
@@ -309,6 +368,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// A text component from a language button, used as the font and size sample.
+        /// </summary>
         static Component MenuType(Component popup)
         {
             var prefab = AccessTools.Field(popup.GetType(), "buttonPrefab")?.GetValue(popup) as Component;
@@ -322,6 +384,9 @@ namespace DressmakerAutoSew
             return null;
         }
 
+        /// <summary>
+        /// Gives a row's text the language menu's font, a fixed size and the ink color.
+        /// </summary>
         // Language entries are drawn in that popup's own type. The pause-menu labels are a faint brown sized for a light page.
         static void StyleRow(GameObject row)
         {
@@ -362,6 +427,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Sets a property by name if it exists, is writable and accepts the value's type.
+        /// </summary>
         static void SetProperty(Type type, Component component, string name, object value)
         {
             if (value == null)
@@ -372,6 +440,9 @@ namespace DressmakerAutoSew
             property.SetValue(component, value);
         }
 
+        /// <summary>
+        /// Shrinks the title slightly so "Automation" fits.
+        /// </summary>
         static void FitTitle(Transform title)
         {
             foreach (Component component in title.GetComponentsInChildren<Component>(true))
@@ -391,6 +462,9 @@ namespace DressmakerAutoSew
                 rect.anchoredPosition += new Vector2(0f, -6f);
         }
 
+        /// <summary>
+        /// Adds the light paper background behind the window's content.
+        /// </summary>
         static void AddPaper(Transform holder)
         {
             Transform host = holder.parent;
@@ -419,6 +493,9 @@ namespace DressmakerAutoSew
             rect.offsetMax = new Vector2(-10f, -8f);
         }
 
+        /// <summary>
+        /// A 1x1 white sprite (created once), tinted for the paper background.
+        /// </summary>
         static Sprite PaperSprite()
         {
             if (_paperSprite != null)
@@ -430,6 +507,9 @@ namespace DressmakerAutoSew
             return _paperSprite;
         }
 
+        /// <summary>
+        /// True if the component has a writable text property (Unity Text, TextMeshPro, ...).
+        /// </summary>
         static bool HasText(Component component)
         {
             if (component == null)
@@ -438,12 +518,18 @@ namespace DressmakerAutoSew
             return property != null && property.PropertyType == typeof(string) && property.CanWrite;
         }
 
+        /// <summary>
+        /// A component's text.
+        /// </summary>
         static string TextOf(Component component)
         {
             var property = component.GetType().GetProperty("text", BindingFlags.Instance | BindingFlags.Public);
             return property != null ? property.GetValue(component) as string : null;
         }
 
+        /// <summary>
+        /// True if the text contains at least one letter.
+        /// </summary>
         static bool HasLetter(string value)
         {
             for (int i = 0; i < value.Length; i++)
@@ -454,6 +540,9 @@ namespace DressmakerAutoSew
             return false;
         }
 
+        /// <summary>
+        /// Adds the Auto sew switch, the speed slider and the three feature switches.
+        /// </summary>
         static void BuildControls(Transform content, Toggle assist, Slider music)
         {
             _toggle = BuildToggle(content, assist, ToggleName, "Auto sew", value => Plugin.SetEnabled(value));
@@ -466,6 +555,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Finds our controls in an already-built window (after the pause menu was reopened).
+        /// </summary>
         static void BindExisting(Transform panel)
         {
             _stopRow = FindNamed(panel, "AutoSewStopManual")?.gameObject;
@@ -481,6 +573,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Creates a switch by cloning the game's switch row, with our label and handler.
+        /// </summary>
         static Toggle BuildToggle(Transform parent, Toggle source, string name, string label, UnityAction<bool> changed)
         {
             GameObject row = CloneInto(source, parent, name);
@@ -499,6 +594,9 @@ namespace DressmakerAutoSew
             return toggle;
         }
 
+        /// <summary>
+        /// Creates the speed slider by cloning the game's music slider.
+        /// </summary>
         static Slider BuildSlider(Transform parent, Slider source)
         {
             GameObject row = CloneInto(source, parent, SliderName);
@@ -522,6 +620,9 @@ namespace DressmakerAutoSew
             return slider;
         }
 
+        /// <summary>
+        /// Creates the Automation button in the pause menu, as a copy of the Language button.
+        /// </summary>
         static void EnsureButton(Transform language)
         {
             if (language == null || language.parent == null)
@@ -552,6 +653,10 @@ namespace DressmakerAutoSew
             Plugin.Log.LogInfo("Automation opens from the pause menu.");
         }
 
+        /// <summary>
+        /// Places the Automation button just under Language. If the menu doesn't use automatic layout,
+        /// moves the rows below down by one row to make room.
+        /// </summary>
         // Language is a normal pause-menu row. Copy that row and open a slot under it.
         // Do not clone a parent, or the dialog title bar is what gets placed over the other rows.
         static void PlaceBesideLanguage(RectTransform button, RectTransform language)
@@ -587,6 +692,9 @@ namespace DressmakerAutoSew
             button.SetSiblingIndex(language.GetSiblingIndex() + 1);
         }
 
+        /// <summary>
+        /// The vertical distance between menu rows.
+        /// </summary>
         static float ButtonGap(RectTransform language)
         {
             float nearest = 0f;
@@ -605,6 +713,9 @@ namespace DressmakerAutoSew
             return nearest > 1f ? nearest : RowHeight(language) + 6f;
         }
 
+        /// <summary>
+        /// True if an object looks like a menu row of the same kind as Language (similar size, a button).
+        /// </summary>
         static bool SameRow(RectTransform sibling, RectTransform language)
         {
             if (sibling == null || sibling == language || !sibling.gameObject.activeInHierarchy)
@@ -628,6 +739,9 @@ namespace DressmakerAutoSew
             return true;
         }
 
+        /// <summary>
+        /// Finds the pause menu's Language button.
+        /// </summary>
         static Transform FindLanguageButton(Transform scope)
         {
             if (scope == null)
@@ -638,6 +752,9 @@ namespace DressmakerAutoSew
             return FindLanguageWalk(scope);
         }
 
+        /// <summary>
+        /// Searches the whole object tree for the Language button (recursive).
+        /// </summary>
         static Transform FindLanguageWalk(Transform scope)
         {
             if (IsLanguageButton(scope))
@@ -651,6 +768,9 @@ namespace DressmakerAutoSew
             return null;
         }
 
+        /// <summary>
+        /// True for the pause menu's Language button (not one inside the language popup).
+        /// </summary>
         static bool IsLanguageButton(Transform candidate)
         {
             if (candidate == null || candidate.name != "Language")
@@ -665,11 +785,17 @@ namespace DressmakerAutoSew
             return true;
         }
 
+        /// <summary>
+        /// Harmony postfix on LanguageSelectorPopup.Show: closes our window when Language opens.
+        /// </summary>
         public static void LanguageShown()
         {
             Dismiss();
         }
 
+        /// <summary>
+        /// Hides the dark shade behind the window.
+        /// </summary>
         public static void HideDimmer()
         {
             if (_dimmer == null)
@@ -680,6 +806,9 @@ namespace DressmakerAutoSew
             _dimmer.SetActive(false);
         }
 
+        /// <summary>
+        /// Closes the window and its shade.
+        /// </summary>
         static void Dismiss()
         {
             if (_panel != null)
@@ -687,6 +816,9 @@ namespace DressmakerAutoSew
             HideDimmer();
         }
 
+        /// <summary>
+        /// The Automation button was clicked: shows the shade and the window on top, and syncs the controls.
+        /// </summary>
         static void Open()
         {
             if (_panel == null)
@@ -707,11 +839,17 @@ namespace DressmakerAutoSew
             FitDialog();
         }
 
+        /// <summary>
+        /// The window's close button.
+        /// </summary>
         static void Close()
         {
             Dismiss();
         }
 
+        /// <summary>
+        /// Shows the speed slider only while Auto sew is on, and resizes the window.
+        /// </summary>
         static void ApplySpeedVisibility()
         {
             if (_sliderRow == null)
@@ -728,6 +866,9 @@ namespace DressmakerAutoSew
             FitDialog();
         }
 
+        /// <summary>
+        /// Sets the window's height to fit the visible rows, keeping its original width.
+        /// </summary>
         // Speed showing or hiding changes the height only. The width stays at the dialog's original width.
         static void FitDialog()
         {
@@ -764,6 +905,9 @@ namespace DressmakerAutoSew
             frame.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, height);
         }
 
+        /// <summary>
+        /// The total height of the visible rows plus spacing.
+        /// </summary>
         static float VisibleContentHeight(RectTransform holder)
         {
             var layout = holder.GetComponent<VerticalLayoutGroup>();
@@ -786,6 +930,9 @@ namespace DressmakerAutoSew
             return sum;
         }
 
+        /// <summary>
+        /// Stops rows from widening the window.
+        /// </summary>
         static void ConstrainWidth(Transform holder)
         {
             var layout = holder.GetComponent<VerticalLayoutGroup>();
@@ -799,6 +946,9 @@ namespace DressmakerAutoSew
                 fitter.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
         }
 
+        /// <summary>
+        /// The setting behind switch 0, 1 or 2.
+        /// </summary>
         static bool SwitchValue(int index)
         {
             if (index == 0)
@@ -808,6 +958,9 @@ namespace DressmakerAutoSew
             return Plugin.PlaceEnabled;
         }
 
+        /// <summary>
+        /// Changes the setting behind switch 0, 1 or 2.
+        /// </summary>
         static void SetSwitch(int index, bool value)
         {
             if (index == 0)
@@ -818,6 +971,9 @@ namespace DressmakerAutoSew
                 Plugin.SetPlaceEnabled(value);
         }
 
+        /// <summary>
+        /// Clones a control (or its whole row) into our window.
+        /// </summary>
         static GameObject CloneInto(Component source, Transform parent, string name)
         {
             Transform row = source.transform.parent;
@@ -829,6 +985,9 @@ namespace DressmakerAutoSew
             return clone;
         }
 
+        /// <summary>
+        /// Fits a cloned row into our vertical list (fixed height, full width).
+        /// </summary>
         static void AdoptRow(GameObject row)
         {
             var rect = row.GetComponent<RectTransform>();
@@ -864,6 +1023,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Sets every text under this object.
+        /// </summary>
         static void SetText(GameObject root, string value)
         {
             foreach (Component component in root.GetComponentsInChildren<Component>(true))
@@ -877,6 +1039,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// True if the object arranges its children automatically (a layout group).
+        /// </summary>
         static bool UsesLayout(Transform parent)
         {
             if (parent == null)
@@ -888,6 +1053,9 @@ namespace DressmakerAutoSew
             return grid != null && grid.enabled;
         }
 
+        /// <summary>
+        /// A row's height, with a 40 fallback if it isn't measured yet.
+        /// </summary>
         static float RowHeight(RectTransform rect)
         {
             if (rect == null)
@@ -900,6 +1068,9 @@ namespace DressmakerAutoSew
             return height;
         }
 
+        /// <summary>
+        /// Replaces every text containing letters with our label, and turns off translation scripts.
+        /// </summary>
         static void ForceLabel(GameObject root, string label, Transform except)
         {
             foreach (var component in root.GetComponentsInChildren<Component>(true))
@@ -932,6 +1103,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Finds an object by name anywhere below root (recursive).
+        /// </summary>
         static Transform FindNamed(Transform root, string name)
         {
             if (root == null)
@@ -947,6 +1121,9 @@ namespace DressmakerAutoSew
             return null;
         }
 
+        /// <summary>
+        /// Removes the music slider's number readout from our copy.
+        /// </summary>
         static void RemoveReadout(Transform root)
         {
             if (root == null)
@@ -956,12 +1133,18 @@ namespace DressmakerAutoSew
                 UnityEngine.Object.Destroy(readout.gameObject);
         }
 
+        /// <summary>
+        /// Removes every click handler from the buttons under this object.
+        /// </summary>
         static void StripClick(GameObject root)
         {
             foreach (Button button in root.GetComponentsInChildren<Button>(true))
                 StripPersistent(button.onClick);
         }
 
+        /// <summary>
+        /// Removes a cloned control's handlers, including those set up in the Unity editor.
+        /// </summary>
         static void StripPersistent(UnityEventBase evt)
         {
             if (evt == null)
@@ -987,15 +1170,25 @@ namespace DressmakerAutoSew
         }
     }
 
+    /// <summary>
+    /// Hides the shade whenever the window is hidden, however that happens (the shade lives outside it).
+    /// </summary>
     // The shade is moved out of the dialog, so hiding the dialog alone leaves it on screen.
     public class AutoSewGuard : MonoBehaviour
     {
+        /// <summary>
+        /// Unity calls this when the window is hidden.
+        /// </summary>
         void OnDisable()
         {
             PauseMenuOptions.HideDimmer();
         }
     }
 
+    /// <summary>
+    /// Makes the pause menu scrollable (mouse wheel, drag, or a scrollbar) when it is taller than the
+    /// screen. It moves all rows together by an offset instead of using a ScrollRect.
+    /// </summary>
     // Shifts the pause-menu rows together so the list can move when it is taller than the screen.
     public class PauseListScroll : MonoBehaviour, IScrollHandler, IBeginDragHandler, IDragHandler
     {
@@ -1007,6 +1200,9 @@ namespace DressmakerAutoSew
         bool _applying;
         bool _captured;
 
+        /// <summary>
+        /// Adds scrolling to the menu list once.
+        /// </summary>
         public static void Install(Transform list)
         {
             if (list == null || list.GetComponent<PauseListScroll>() != null || list.GetComponentInParent<ScrollRect>() != null)
@@ -1014,12 +1210,19 @@ namespace DressmakerAutoSew
             list.gameObject.AddComponent<PauseListScroll>();
         }
 
+        /// <summary>
+        /// Unity calls this when the menu is shown: measures the rows the first time.
+        /// </summary>
         void OnEnable()
         {
             if (!_captured)
                 Capture();
         }
 
+        /// <summary>
+        /// Records every row's position and the list's height, works out how far it can scroll, and creates
+        /// the scrollbar if needed.
+        /// </summary>
         void Capture()
         {
             _rows.Clear();
@@ -1067,6 +1270,9 @@ namespace DressmakerAutoSew
             Plugin.Log.LogInfo("Pause menu scrolling is on.");
         }
 
+        /// <summary>
+        /// True for a menu row (a switch, slider or button of normal size), excluding our own objects.
+        /// </summary>
         bool IsRow(RectTransform row)
         {
             if (row == null)
@@ -1083,6 +1289,9 @@ namespace DressmakerAutoSew
             return row.GetComponentInChildren<Button>(true) != null && row.rect.width > 80f;
         }
 
+        /// <summary>
+        /// Creates the scrollbar on the right side of the menu.
+        /// </summary>
         Scrollbar CreateBar()
         {
             var root = new GameObject("AutoSewPauseBar", typeof(RectTransform), typeof(Image), typeof(Scrollbar));
@@ -1113,15 +1322,24 @@ namespace DressmakerAutoSew
             return bar;
         }
 
+        /// <summary>
+        /// Mouse wheel: scrolls the menu.
+        /// </summary>
         public void OnScroll(PointerEventData eventData)
         {
             Move(-eventData.scrollDelta.y * 42f);
         }
 
+        /// <summary>
+        /// Required by the drag interface; nothing to do when a drag starts.
+        /// </summary>
         public void OnBeginDrag(PointerEventData eventData)
         {
         }
 
+        /// <summary>
+        /// Dragging: scrolls by the mouse movement, adjusted for the screen scale.
+        /// </summary>
         public void OnDrag(PointerEventData eventData)
         {
             float scale = 1f;
@@ -1131,6 +1349,9 @@ namespace DressmakerAutoSew
             Move(eventData.delta.y / scale);
         }
 
+        /// <summary>
+        /// The scrollbar moved: scroll to match.
+        /// </summary>
         void OnBar(float value)
         {
             if (_applying)
@@ -1139,6 +1360,9 @@ namespace DressmakerAutoSew
             Apply();
         }
 
+        /// <summary>
+        /// Scrolls by an amount, within the allowed range.
+        /// </summary>
         void Move(float delta)
         {
             if (_limit <= 1f)
@@ -1147,6 +1371,9 @@ namespace DressmakerAutoSew
             Apply();
         }
 
+        /// <summary>
+        /// Moves every row by the current offset and updates the scrollbar.
+        /// </summary>
         void Apply()
         {
             _applying = true;

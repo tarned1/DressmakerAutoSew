@@ -7,14 +7,33 @@ using UnityEngine;
 
 namespace DressmakerAutoSew
 {
+    /// <summary>
+    /// Auto sew: sews a seam by itself, with the animation, and finishes it at 100% quality.
+    /// How it works: when a seam opens, Arm reads the seam's path as a list of points. Every frame,
+    /// Tick moves a distance along that path, moves the fabric so the needle follows it, draws the
+    /// stitches and the progress, and at the end calls the game's own Finish(true).
+    /// It is a Harmony prefix on SewingController.Update that returns false while it runs, so the
+    /// game's normal sewing code is skipped for that frame.
+    /// </summary>
     public static class AutoSew
     {
+        /// <summary>
+        /// Everything about the seam currently being sewn: the path, how far along it is,
+        /// the speed, and the state of the animated sewing hand.
+        /// </summary>
         sealed class Run
         {
             public MonoBehaviour Owner;
+            /// <summary>
+            /// The seam path as points, and the running total length up to each point
+            /// (Cumulative[i] = length from the start to point i), used to find a position by distance.
+            /// </summary>
             public List<Vector2> Points;
             public float[] Cumulative;
             public float Length;
+            /// <summary>
+            /// How far along the seam the needle is, in the same units as Length.
+            /// </summary>
             public float Distance;
             public float StitchDistance;
             public float Pace;
@@ -32,9 +51,22 @@ namespace DressmakerAutoSew
             public int HandFeedFrame = -1;
         }
 
+        /// <summary>
+        /// The seam being sewn, or null when nothing is running.
+        /// </summary>
         static Run _run;
+        /// <summary>
+        /// A sewing screen where auto sew failed. It is left to the game so the player can sew by hand.
+        /// </summary>
         static MonoBehaviour _failedController;
+        /// <summary>
+        /// Guard against the hook running inside itself (re-entrancy).
+        /// </summary>
         static bool _inTick;
+        /// <summary>
+        /// Cached handles to the game's SewingController fields and methods. Bind fills them once per type,
+        /// so each frame doesn't repeat slow name lookups.
+        /// </summary>
         static FieldInfo _finished;
         static FieldInfo _patternLine;
         static FieldInfo _fabric;
@@ -54,6 +86,10 @@ namespace DressmakerAutoSew
         static MethodInfo _stitchSounds;
         static PropertyInfo _canSew;
 
+        /// <summary>
+        /// Harmony postfix on SewingController.InitializeWith: a new seam was opened, so start sewing it.
+        /// __instance is the game's SewingController (Harmony fills this parameter by name).
+        /// </summary>
         public static void InitializePostfix(MonoBehaviour __instance)
         {
             try
@@ -72,6 +108,11 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Harmony prefix on SewingController.Update, every frame on the sewing screen.
+        /// Returns false to skip the game's own update while auto sew is sewing, true to let the game run.
+        /// Any error stops auto sew for this seam and hands it back to the game.
+        /// </summary>
         public static bool UpdatePrefix(MonoBehaviour __instance)
         {
             try
@@ -87,6 +128,12 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// One frame of auto sewing. Returns true when auto sew handled the frame.
+        /// Steps: checks that sewing is allowed (not paused, no note on screen, not finished), reads the
+        /// speed keys and R (restart), moves the needle forward by maxFeed x speed x frame time, then
+        /// places the fabric, draws stitches, updates progress and visuals, and finishes at the end.
+        /// </summary>
         static bool Tick(MonoBehaviour controller)
         {
             if (_inTick)
@@ -177,6 +224,10 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Prepares a seam: reads its path, computes the cumulative lengths, clears the score and creates
+        /// the Run. A seam without a usable path is marked finished at 100% straight away.
+        /// </summary>
         static void Arm(MonoBehaviour controller, bool resetSegment)
         {
             Bind(controller.GetType());
@@ -229,6 +280,9 @@ namespace DressmakerAutoSew
             Plugin.Log.LogInfo("Auto sewing a seam (" + _run.Length.ToString("0.00") + " units) at machine speed " + Plugin.Speed.ToString("0.00") + ".");
         }
 
+        /// <summary>
+        /// Ends the seam: clears mistakes and calls the game's Finish(true), which records 100% quality.
+        /// </summary>
         static void Complete(MonoBehaviour controller)
         {
             ReleaseRun();
@@ -252,6 +306,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// W / Up and S / Down change speed while held; the mouse wheel changes it in steps.
+        /// </summary>
         static void ReadSpeedKeys()
         {
             if (_run == null)
@@ -271,6 +328,10 @@ namespace DressmakerAutoSew
             _run.Pace = Plugin.Speed;
         }
 
+        /// <summary>
+        /// Moves and rotates the fabric so the point at this distance along the seam sits under the needle,
+        /// with the seam's direction lined up with the machine.
+        /// </summary>
         static void Place(MonoBehaviour controller, float distance)
         {
             var fabric = _fabric.GetValue(controller) as Component;
@@ -287,6 +348,10 @@ namespace DressmakerAutoSew
             transform.RotateAround(Vector3.zero, Vector3.up, 180f - angle);
         }
 
+        /// <summary>
+        /// Finds the position and direction at a distance along the path: locates the segment containing
+        /// that distance and interpolates (Lerp) between its two end points.
+        /// </summary>
         static void Sample(List<Vector2> points, float[] cumulative, float distance, out Vector2 point, out Vector2 tangent)
         {
             float length = cumulative[cumulative.Length - 1];
@@ -308,6 +373,10 @@ namespace DressmakerAutoSew
                 tangent.Normalize();
         }
 
+        /// <summary>
+        /// Binary search: the last segment whose start is at or before the distance.
+        /// Takes log2(n) steps instead of checking every segment.
+        /// </summary>
         static int SegmentIndex(float[] cumulative, float distance)
         {
             int lo = 0;
@@ -323,6 +392,10 @@ namespace DressmakerAutoSew
             return lo;
         }
 
+        /// <summary>
+        /// Draws the stitch line. Stitches sit at fixed intervals along the seam; only the tip follows the
+        /// needle. Points already drawn are not recomputed, unless the seam was restarted.
+        /// </summary>
         static void DrawStitches(MonoBehaviour controller, Run run)
         {
             var line = _stitchLine.GetValue(controller) as LineRenderer;
@@ -361,6 +434,9 @@ namespace DressmakerAutoSew
             run.DrawnThrough = run.Distance;
         }
 
+        /// <summary>
+        /// Shows how much of the seam is done, through the pattern line's shader value _Progress.
+        /// </summary>
         static void SetProgress(MonoBehaviour controller, float progress)
         {
             var renderer = _patternRenderer.GetValue(controller) as Renderer;
@@ -370,6 +446,10 @@ namespace DressmakerAutoSew
             renderer.material.SetFloat("_Progress", Mathf.Clamp01(progress));
         }
 
+        /// <summary>
+        /// Keeps the visuals in sync with the speed: the feed speed value, the speed lever, the stitching
+        /// sounds and the machine's animation speed. These are cosmetic, so their errors are ignored.
+        /// </summary>
         static void SetFeedVisuals(MonoBehaviour controller, float maxFeed, float pace)
         {
             _currentFabricSpeed?.SetValue(controller, maxFeed * pace);
@@ -398,12 +478,18 @@ namespace DressmakerAutoSew
                 animator.SetFloat("Speed", pace);
         }
 
+        /// <summary>
+        /// Stops auto sew and puts the hand back. Called when the switch is turned off.
+        /// </summary>
         public static void Cancel()
         {
             ReleaseRun();
             _failedController = null;
         }
 
+        /// <summary>
+        /// Forgets the current seam and restores the hand to where it started.
+        /// </summary>
         static void ReleaseRun()
         {
             Run previous = _run;
@@ -411,6 +497,9 @@ namespace DressmakerAutoSew
             RestoreHand(previous);
         }
 
+        /// <summary>
+        /// Puts the sewing hand back to its saved position, rotation and "engaged" state.
+        /// </summary>
         static void RestoreHand(Run previous)
         {
             if (previous == null || previous.Hand == null)
@@ -428,6 +517,11 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Remembers the hand's resting pose and where it holds the fabric (in the fabric's own coordinates),
+        /// so LateTick can make it follow the fabric. Skipped if the hand is part of the fabric's hierarchy,
+        /// because moving one would move the other.
+        /// </summary>
         static void CaptureHand(MonoBehaviour controller, Run run)
         {
             if (run.HandFailed)
@@ -452,6 +546,11 @@ namespace DressmakerAutoSew
             run.HandReady = true;
         }
 
+        /// <summary>
+        /// Runs after all Update calls each frame. Makes the hand follow the fabric while it feeds, smoothly
+        /// (exponential blending). If the hand would reach too far (0.22 units), or feeding stops, the hand
+        /// returns to its start and takes a new grip, like a real hand re-gripping cloth.
+        /// </summary>
         // Apply after ordinary Update calls, so mouse-driven hand updates cannot
         // overwrite the automated pose during the same frame.
         public static void LateTick()
@@ -510,6 +609,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Moves the hand back to its resting pose and marks it as re-gripping.
+        /// </summary>
         static void ReturnHandToStart(Run run)
         {
             run.Hand.transform.position = run.HandRestPosition;
@@ -518,6 +620,9 @@ namespace DressmakerAutoSew
             run.HandReturning = true;
         }
 
+        /// <summary>
+        /// Clears the game's accuracy samples and mistake count, so the seam scores 100%.
+        /// </summary>
         static void ClearScore(MonoBehaviour controller)
         {
             if (_accuracy?.GetValue(controller) is IList accuracy)
@@ -525,6 +630,9 @@ namespace DressmakerAutoSew
             _mistakes?.SetValue(controller, 0);
         }
 
+        /// <summary>
+        /// Reads the game's CanSew property. False if it is missing or throws.
+        /// </summary>
         static bool CanSew(MonoBehaviour controller)
         {
             if (_canSew == null)
@@ -539,17 +647,28 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// True when the game says this seam is already finished.
+        /// </summary>
         static bool Finished(MonoBehaviour controller)
         {
             return _finished != null && (bool)_finished.GetValue(controller);
         }
 
+        /// <summary>
+        /// True while the game shows a note on the sewing screen. Auto sew waits until it is closed.
+        /// This looks the field up by name every frame, and logs a warning in current game versions,
+        /// where _isShowingNote no longer exists.
+        /// </summary>
         static bool ShowingNote(MonoBehaviour controller)
         {
             var field = AccessTools.Field(controller.GetType(), "_isShowingNote");
             return field != null && (bool)field.GetValue(controller);
         }
 
+        /// <summary>
+        /// Reads a cached float field, with a fallback if the field is missing or not a float.
+        /// </summary>
         static float ReadFloat(FieldInfo field, object instance, float fallback)
         {
             if (field == null)
@@ -558,6 +677,9 @@ namespace DressmakerAutoSew
             return value is float number ? number : fallback;
         }
 
+        /// <summary>
+        /// Converts the game's seam line into a list of 2D points. Throws on invalid points (NaN, infinity).
+        /// </summary>
         static List<Vector2> ReadPath(object raw)
         {
             var points = new List<Vector2>();
@@ -575,6 +697,9 @@ namespace DressmakerAutoSew
             return points;
         }
 
+        /// <summary>
+        /// Converts one point to 2D. Accepts Vector2, or Vector3 where a flat seam uses x/z instead of x/y.
+        /// </summary>
         static Vector2 ReadPoint(object item)
         {
             if (item is Vector2 vector2)
@@ -588,6 +713,9 @@ namespace DressmakerAutoSew
             throw new InvalidOperationException("Unexpected seam point type " + (item == null ? "null" : item.GetType().FullName));
         }
 
+        /// <summary>
+        /// Looks up all needed SewingController fields and methods once per controller type, and caches them.
+        /// </summary>
         static void Bind(Type type)
         {
             if (_finish != null && _finish.DeclaringType == type)

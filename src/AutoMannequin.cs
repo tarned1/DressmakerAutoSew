@@ -4,20 +4,40 @@ using UnityEngine;
 
 namespace DressmakerAutoSew
 {
+    /// <summary>
+    /// Auto mannequin: on the mannequin screen, F4 turns the bust, waist and hip gears until the form
+    /// matches the client's measurements. It never presses Confirm.
+    /// It is a feedback loop (closed-loop control): read the tape, compare with the target, turn the gear
+    /// a little, repeat. Steps get smaller near the target. If the error keeps changing sign
+    /// (overshooting back and forth), it stops at the best position it saw.
+    /// </summary>
     public static class AutoMannequin
     {
+        /// <summary>
+        /// Game member names per part (index 0 bust, 1 waist, 2 hips): the paper's mannequin value slots,
+        /// the "ghost" stripe markers, the lattice setter methods and the lattice read names.
+        /// </summary>
         static readonly string[] Parts = { "Bust", "Waist", "Hips" };
         static readonly string[] Slots = { "mannequinBustValue", "mannequinWaistValue", "mannequinHipsValue" };
         static readonly string[] Ghosts = { "ghostBust", "ghostWaist", "ghostHips" };
         static readonly string[] Setters = { "SetBust", "SetWaist", "SetHips" };
         static readonly string[] Reads = { "Bust", "Waist", "Hips" };
 
+        /// <summary>
+        /// Time limits: for getting the tape ready, and for matching one part.
+        /// </summary>
         const float TapeSeconds = 8f;
         const float PartSeconds = 20f;
 
         static bool _requested;
+        /// <summary>
+        /// True while a pass is running.
+        /// </summary>
         public static bool IsActive => _requested && !_halted && !_done;
 
+        /// <summary>
+        /// Called by F4. Finds the active gear, its measurer and paper, and starts a pass.
+        /// </summary>
         public static bool Start(object scene)
         {
             if (!Plugin.MannequinEnabled || scene == null || !GameAccess.Bool(scene, "IsMannequinScene"))
@@ -44,6 +64,11 @@ namespace DressmakerAutoSew
             return true;
         }
 
+        /// <summary>
+        /// Pass state: the last frame handled (Gear.Update runs once per gear, so the work is done only
+        /// once per frame), the current part, tape state, error history and best position so far,
+        /// time limits, and which scene, gear, measurer and paper this pass belongs to.
+        /// </summary>
         static int _frame = -1;
         static int _part = -1;
         static bool _tapeOn;
@@ -65,6 +90,9 @@ namespace DressmakerAutoSew
         static readonly float[] _targets = new float[3];
         static readonly bool[] _verified = new bool[3];
 
+        /// <summary>
+        /// Harmony postfix on Gear.Update. Runs Tick once per frame; any error halts the pass.
+        /// </summary>
         public static void GearTick(MonoBehaviour __instance)
         {
             if (Time.timeScale <= 0f)
@@ -82,6 +110,11 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// One step of the pass: check the scene is still the same; read the targets; pick the next part
+        /// that isn't verified; make sure the tape is out; put the tape on that part; then turn its gear.
+        /// When all three parts match, update the game's accuracy and Confirm button and stop.
+        /// </summary>
         static void Tick(MonoBehaviour gear)
         {
             if (!Plugin.MannequinEnabled)
@@ -189,6 +222,9 @@ namespace DressmakerAutoSew
             Turn(one, paper, part, targets[part]);
         }
 
+        /// <summary>
+        /// Stops the pass because of a problem, puts the tape away and logs why.
+        /// </summary>
         static void Halt(string reason)
         {
             if (_halted)
@@ -199,6 +235,9 @@ namespace DressmakerAutoSew
             Plugin.Log.LogWarning(reason);
         }
 
+        /// <summary>
+        /// Clears per-pass progress (verified parts, error history, timers).
+        /// </summary>
         static void Reset()
         {
             Array.Clear(_verified, 0, _verified.Length);
@@ -214,6 +253,9 @@ namespace DressmakerAutoSew
             _partSince = 0f;
         }
 
+        /// <summary>
+        /// Stops the pass on request and forgets everything about it.
+        /// </summary>
         public static void Cancel()
         {
             _requested = false;
@@ -228,6 +270,9 @@ namespace DressmakerAutoSew
             Array.Clear(_targets, 0, _targets.Length);
         }
 
+        /// <summary>
+        /// Called by Plugin four times a second. Cancels if the scene, gear, paper or measurer changed.
+        /// </summary>
         public static void Maintain()
         {
             if (!Plugin.MannequinEnabled)
@@ -245,12 +290,18 @@ namespace DressmakerAutoSew
                 Cancel();
         }
 
+        /// <summary>
+        /// True if this camera belongs to the running pass (used to block its zoom-out).
+        /// </summary>
         public static bool OwnsCamera(object camera)
         {
             return _measurer != null
                 && ReferenceEquals(GameAccess.Member(_measurer, "measurerCamControl"), camera);
         }
 
+        /// <summary>
+        /// The first part that isn't verified and matching yet, or -1 when all three are done.
+        /// </summary>
         static int NextPart(object paper, float[] targets)
         {
             for (int i = 0; i < Parts.Length; i++)
@@ -261,6 +312,9 @@ namespace DressmakerAutoSew
             return -1;
         }
 
+        /// <summary>
+        /// True when the paper's recorded value matches the target to the tenth shown (or within 0.05 cm).
+        /// </summary>
         static bool Close(object paper, string slot, float target)
         {
             object value = GameAccess.Member(paper, slot);
@@ -272,6 +326,9 @@ namespace DressmakerAutoSew
             return Tenth(number) == Tenth(target) || Mathf.Abs(number - target) <= 0.05f;
         }
 
+        /// <summary>
+        /// The gear that controls this body part.
+        /// </summary>
         static object GearFor(Array gears, int part)
         {
             foreach (object one in gears)
@@ -282,6 +339,10 @@ namespace DressmakerAutoSew
             return null;
         }
 
+        /// <summary>
+        /// Puts the tape on this part's band, at the same height the gear's own measurement uses,
+        /// and checks the tape lines up with the stripe on the paper.
+        /// </summary>
         static bool ArmTape(object gear, object paper, int part)
         {
             var measurer = GameAccess.Member(gear, "personMeasurer") as MonoBehaviour;
@@ -318,6 +379,10 @@ namespace DressmakerAutoSew
             return AlignTapeBand(measurer, paper, part) && ReadTape(measurer) > 1f;
         }
 
+        /// <summary>
+        /// Moves the tape until the drawn tape marker lines up with the part's stripe (within 1 mm),
+        /// up to 4 tries. Checks what is actually shown, not just where the tape was asked to go.
+        /// </summary>
         // Both references existed in the supplied game's integration code. Compare
         // the displayed tape to the displayed band, rather than assuming the gear
         // sampling height is also the tape's visible height.
@@ -350,6 +415,13 @@ namespace DressmakerAutoSew
             return Mathf.Abs(ghost.position.y - marker.position.y) <= 0.001f;
         }
 
+        /// <summary>
+        /// One control step for a gear. error = target - tape reading.
+        /// The step is error x gain, with a bigger gain far from the target and a smaller one close to it,
+        /// clamped to a maximum, and scaled by frame time so it behaves the same at any frame rate.
+        /// Tracks the best position seen; after two sign flips (overshooting), it uses the best position.
+        /// If the gear hits an end without improving, the direction is inverted.
+        /// </summary>
         static void Turn(object gear, object paper, int part, float target)
         {
             var measurer = GameAccess.Member(gear, "personMeasurer") as MonoBehaviour;
@@ -417,6 +489,10 @@ namespace DressmakerAutoSew
             AccessTools.Method(measurer.GetType(), "UpdateTape")?.Invoke(measurer, new object[] { true });
         }
 
+        /// <summary>
+        /// Sets the final gear value, re-checks the tape and the stripe, records the measurement in the game,
+        /// and marks the part as verified. Throws if anything doesn't match, which halts the pass.
+        /// </summary>
         static void Commit(object gear, object paper, int part, MonoBehaviour measurer, float latticeValue)
         {
             object lattice = GameAccess.Member(gear, "targetLattice");
@@ -436,6 +512,9 @@ namespace DressmakerAutoSew
             Plugin.Log.LogInfo("Auto mannequin " + Parts[part] + " tape reads " + ReadTape(measurer).ToString("0.0") + " cm.");
         }
 
+        /// <summary>
+        /// Sets one part's value on the form's lattice, the gear's body part and the gear's visual position.
+        /// </summary>
         static void Apply(object gear, object lattice, int part, float value)
         {
             AutoMeasure.InvokeRequired(lattice, Setters[part], value);
@@ -443,6 +522,9 @@ namespace DressmakerAutoSew
             AutoMeasure.InvokeRequired(gear, "SetGearPosition", value);
         }
 
+        /// <summary>
+        /// Index of a slot name in Slots (currently unused).
+        /// </summary>
         static int SlotIndex(string slot)
         {
             for (int i = 0; i < Slots.Length; i++)
@@ -453,17 +535,27 @@ namespace DressmakerAutoSew
             return 0;
         }
 
+        /// <summary>
+        /// The value as the game shows it: one decimal, e.g. "84.5". Used to compare what the player sees.
+        /// </summary>
         static string Tenth(float value)
         {
             return value.ToString("0.0");
         }
 
+        /// <summary>
+        /// The current tape reading in cm.
+        /// </summary>
         static float ReadTape(MonoBehaviour measurer)
         {
             var end = GameAccess.Member(measurer, "MeasuringTapeEnd") as Component;
             return end == null ? 0f : GameAccess.Float(end, "value", 0f);
         }
 
+        /// <summary>
+        /// The sizes to match: from the paper on screen if it has all three, otherwise from the saved
+        /// client measurements. Hips are set 0.1 cm under the body measurement.
+        /// </summary>
         static bool Targets(object scene, out float bust, out float waist, out float hips)
         {
             bust = waist = hips = 0f;
@@ -487,6 +579,9 @@ namespace DressmakerAutoSew
             return Valid(hips);
         }
 
+        /// <summary>
+        /// The current client's measurements from the game's save data.
+        /// </summary>
         static bool Saved(out float bust, out float waist, out float hips)
         {
             bust = waist = hips = 0f;
@@ -503,11 +598,17 @@ namespace DressmakerAutoSew
             return Valid(bust) && Valid(waist) && Valid(hips);
         }
 
+        /// <summary>
+        /// True for a real measurement (a finite number above 1).
+        /// </summary>
         static bool Valid(float value)
         {
             return value > 1f && !float.IsNaN(value) && !float.IsInfinity(value);
         }
 
+        /// <summary>
+        /// Logs a warning, but not the same message twice in a row (Tick runs every frame).
+        /// </summary>
         static void Note(string message)
         {
             if (_lastNote == message)

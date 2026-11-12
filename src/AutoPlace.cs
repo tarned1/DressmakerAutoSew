@@ -8,25 +8,84 @@ using System.Threading.Tasks;
 
 namespace DressmakerAutoSew
 {
+    /// <summary>
+    /// Pattern layout: places pattern pieces on fabric automatically (the Solve and Optimize buttons).
+    ///
+    /// The big picture:
+    /// 1. Rasterize. The open part of the fabric becomes a grid of Cell-sized squares (3 mm). Each piece
+    ///    becomes a Stamp: the list of squares it covers, once per orientation the grain allows.
+    /// 2. Search (on a background thread). Greedy placement: put pieces one by one, biggest first,
+    ///    each at the free corner ("anchor") that adds the least fabric length. Try several piece
+    ///    orders and keep the best layout. Then Improve and Settle move single pieces to better spots.
+    /// 3. Place (back on the main thread). Validate the layout against the current fabric, move the
+    ///    pieces into the world, then Snap them closer using the game's own collision check.
+    ///
+    /// Packing shapes perfectly is NP-hard, so this is a heuristic: good layouts in bounded time,
+    /// not guaranteed optimal ones. The search has a time budget (NestBudgetMs).
+    /// </summary>
     public static class AutoPlace
     {
+        /// <summary>
+        /// Size of one grid square in meters (3 mm). Smaller = more precise but slower; it also sets the
+        /// gap between pieces (see Gap).
+        /// </summary>
         const float Cell = 0.003f;
+        /// <summary>
+        /// Margin, in squares, kept around every placed piece (the "halo"). Needed because the game marks
+        /// pieces that sit too close as orange. With Cell = 3 mm this is about 3 mm.
+        /// </summary>
         const int Gap = 1;
+        /// <summary>
+        /// Maximum number of steps for Dive, the exhaustive search used for 3 pieces or fewer.
+        /// </summary>
         const int NodeBudget = 8000;
+        /// <summary>
+        /// Safety limit on grid size, so a huge fabric can't use up all memory.
+        /// </summary>
         const int MaxGridCells = 64000000;
+        /// <summary>
+        /// True while a placement is running, so a second press of Solve is ignored.
+        /// </summary>
         static bool _solving;
+        /// <summary>
+        /// Set when the search ran out of time; the message then mentions that the layout could be tighter.
+        /// </summary>
         static bool _searchLimited;
+        /// <summary>
+        /// Frame number of the last coroutine step (the "heartbeat"). If it stops changing, Unity stopped
+        /// the coroutine, and RunPlacement recovers.
+        /// </summary>
         static int _lastBeat;
+        /// <summary>
+        /// The background search, so a new Solve can wait until an old search has really finished.
+        /// </summary>
         static Task _searchTask;
+        /// <summary>
+        /// Set by Cloth when the bolt is longer than the table opens (trim needed, not "too short").
+        /// </summary>
         static bool _lengthCapped;
+        /// <summary>
+        /// While true, NestTimedOut never reports a timeout. Used so the first, big-first greedy pass always
+        /// completes, even on huge dresses.
+        /// </summary>
         static bool _mustFinish;
         
+        /// <summary>
+        /// The hidden object that runs AutoSew's coroutines (see Runner).
+        /// </summary>
         static AutoSewRunner _runner;
 
+        /// <summary>
+        /// Reused buffers for the collision check in TooClose (avoids creating a new list on every call).
+        /// </summary>
         static readonly List<Collider2D> _hits = new List<Collider2D>();
         static ContactFilter2D _clearanceFilter;
         private static bool _filterReady;
        
+        /// <summary>
+        /// True when no allowed orientation of the piece fits across the fabric's width,
+        /// so no amount of extra length or trimming will ever help.
+        /// </summary>
         // True when no allowed orientation of the piece fits across the fabric's width,
         // so no amount of extra length or trimming will ever help.
         static bool TooWide(Piece piece, int rows)
@@ -37,6 +96,12 @@ namespace DressmakerAutoSew
             return true;
         }
         
+        /// <summary>
+        /// The game's own "too close" test, the one that turns pieces orange (PatternPanel.Update): does the
+        /// piece's 2D outline overlap the fabric edges (layer Bounds), another piece (Default) or a cut hole
+        /// (Cutout)? Ignores the cover past the fabric's right end, which may still be moving while the
+        /// fabric unrolls; Snap never moves pieces toward it anyway.
+        /// </summary>
         // The exact test PatternPanel.Update uses for the orange warning:
         // does this piece's outline overlap the fabric edges, another piece or a cut hole?
         static bool TooClose(object panel)
@@ -66,12 +131,22 @@ namespace DressmakerAutoSew
             return false;
         }
         
+        /// <summary>
+        /// Most steps one Slide may take in one direction.
+        /// </summary>
         const int SnapMaxSteps = 40;
 
+        /// <summary>
+        /// Directions Snap tries. Every one moves the piece left or down, toward the start of the bolt.
+        /// </summary>
         // Directions a piece may slide. Every one moves it left or down,
         // so pieces only ever travel toward the start of the bolt.
         static readonly Vector3[] SnapDirs = BuildSnapDirs();
 
+        /// <summary>
+        /// Builds a fan of directions: left, then every 15 degrees above and below left up to 75 degrees,
+        /// then straight down. The diagonals let a piece slide along a slanted neighbour.
+        /// </summary>
         static Vector3[] BuildSnapDirs()
         {
             var dirs = new List<Vector3> { Vector3.left };
@@ -85,9 +160,16 @@ namespace DressmakerAutoSew
             return dirs.ToArray();
         }
 
+        /// <summary>
+        /// Step sizes, coarse to fine: big steps cover distance quickly, small ones get really close.
+        /// </summary>
         // Big steps first to cover distance quickly, then small ones to get really close.
         static readonly float[] SnapSteps = { 0.005f, 0.001f, 0.0005f };  // 5 mm, 1 mm, 0.5 mm
 
+        /// <summary>
+        /// Moves the piece by delta repeatedly until the game says "too close", then steps back once.
+        /// Returns true if it moved at least one step.
+        /// </summary>
         // Slide one direction until the game says "too close", then step back once.
         static bool Slide(object panel, Transform t, Vector3 delta)
         {
@@ -105,6 +187,11 @@ namespace DressmakerAutoSew
             return steps > 0;
         }
 
+        /// <summary>
+        /// Pulls a placed piece as close to its neighbours as the game allows: tries every direction with
+        /// every step size, for up to 6 rounds, until nothing moves. Works on the real shapes, so it closes
+        /// the extra gaps the grid leaves.
+        /// </summary>
         // Pull a placed piece left and down as far as the game allows.
         static void Snap(object panel)
         {
@@ -130,6 +217,10 @@ namespace DressmakerAutoSew
             }
         }
         
+        /// <summary>
+        /// Creates (once) a hidden object that belongs only to AutoSew and runs its coroutines.
+        /// The game can't stop coroutines on it, unlike on its own objects.
+        /// </summary>
         static MonoBehaviour Runner()
         {
             if (_runner == null)
@@ -142,10 +233,24 @@ namespace DressmakerAutoSew
             return _runner;
         }
 
+        /// <summary>
+        /// Which fabric each pattern piece goes on, keyed by the piece's ID (see Id).
+        /// </summary>
         static readonly Dictionary<int, object> Assign = new Dictionary<int, object>();
+        /// <summary>
+        /// Pieces whose fabric the player (or the board) has already chosen.
+        /// </summary>
         static readonly HashSet<int> Decided = new HashSet<int>();
+        /// <summary>
+        /// The best layout found so far in the current search (see Consider).
+        /// </summary>
         static readonly List<Choice> Best = new List<Choice>();
 
+        /// <summary>
+        /// The status message shown in the Layout tab, e.g. "Placed 28 patterns."
+        /// The other fields here are search state: the best layout's score (count, length, top, spread),
+        /// the step counter for Dive, the search clock and time budget, and two timing clocks for debugging.
+        /// </summary>
         static string _notice = "";
         static bool _menuLogged;
         static int _nodes;
@@ -158,6 +263,12 @@ namespace DressmakerAutoSew
         static readonly Stopwatch _paintClock = new Stopwatch();
         static readonly Stopwatch _poseClock = new Stopwatch();
 
+        /// <summary>
+        /// The fabric as a grid of squares, stored as one bit per square: 0 = free, 1 = taken.
+        /// Squares are numbered row by row: index = y x cols + x. 64 squares are packed into one ulong,
+        /// which keeps even long fabric small in memory. LastOccupiedCol remembers the rightmost taken column,
+        /// so searches can stop early.
+        /// </summary>
         // The search uses only occupied/free state; piece IDs were never read.
         // One bit per cell keeps long fresh bolts affordable without coarsening.
         sealed class Grid
@@ -167,6 +278,9 @@ namespace DressmakerAutoSew
             public int Length { get; private set; }
             public int LastOccupiedCol { get; private set; }
 
+            /// <summary>
+            /// Creates an empty grid of length squares, cols squares wide.
+            /// </summary>
             public Grid(int length, int cols)
             {
                 if (length <= 0 || cols <= 0 || length % cols != 0 || length > MaxGridCells)
@@ -177,6 +291,10 @@ namespace DressmakerAutoSew
                 LastOccupiedCol = -1;
             }
 
+            /// <summary>
+            /// Reads or writes one square by index (0 = free, anything else = taken).
+            /// index &gt;&gt; 6 finds the ulong (divide by 64); index &amp; 63 finds the bit inside it.
+            /// </summary>
             public int this[int index]
             {
                 get
@@ -200,6 +318,9 @@ namespace DressmakerAutoSew
                 }
             }
 
+            /// <summary>
+            /// A copy of the grid, so a search can paint on it without changing the original.
+            /// </summary>
             public Grid Clone()
             {
                 var copy = new Grid(Length, _cols);
@@ -207,6 +328,9 @@ namespace DressmakerAutoSew
                 return copy;
             }
 
+            /// <summary>
+            /// Copies this grid's contents into another grid of the same size (faster than allocating a new one).
+            /// </summary>
             public void CopyTo(Grid target)
             {
                 if (target.Length != Length || target._cols != _cols)
@@ -216,6 +340,10 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// One placement in a layout: which piece (index into the piece list), which orientation,
+        /// and the grid column and row of the stamp's bottom-left corner.
+        /// </summary>
         struct Choice
         {
             public int Piece;
@@ -224,6 +352,13 @@ namespace DressmakerAutoSew
             public int Row;
         }
 
+        /// <summary>
+        /// One piece in one orientation, as grid squares, relative to its own bottom-left corner.
+        /// Cells: the squares it covers. MaxX/MaxY: its width/height in squares minus 1.
+        /// Left/Down: its left and bottom edge squares, used by Nudge to test a one-step move cheaply.
+        /// Halo: the ring of squares around it (the Gap margin), precomputed once instead of on every paint.
+        /// Rotation: the world rotation that gives this orientation. VisualW/VisualH: real size in meters.
+        /// </summary>
         sealed class Stamp
         {
             public Quaternion Rotation;
@@ -239,6 +374,10 @@ namespace DressmakerAutoSew
             public Vector2Int[] Halo;
         }
 
+        /// <summary>
+        /// A pattern piece prepared for the search: the game's panel object, its 3D object on the table,
+        /// and one Stamp per allowed orientation.
+        /// </summary>
         sealed class Piece
         {
             public object Panel;
@@ -246,11 +385,17 @@ namespace DressmakerAutoSew
             public Stamp[] Orients;
         }
 
+        /// <summary>
+        /// Kept for Plugin.OnDestroy; does nothing now, because cut holes are read from the game each time.
+        /// </summary>
         public static void ClearCutHistory()
         {
             // Hole masks are owned and updated by CuttingRoom, not cached here.
         }
 
+        /// <summary>
+        /// A piece's position before Solve, so everything can be put back if placement fails.
+        /// </summary>
         sealed class SavedPose
         {
             public object Panel;
@@ -261,6 +406,10 @@ namespace DressmakerAutoSew
             public bool InWorld;
         }
 
+        /// <summary>
+        /// Harmony postfix on CuttingRoom.Update, every frame in the cutting room. Runs the Layout tab
+        /// (PlaceBoard.Tick). Logs an error only once, so a broken menu doesn't flood the log.
+        /// </summary>
         public static void Tick(MonoBehaviour __instance)
         {
             try
@@ -276,13 +425,22 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// The current status message, read by the Layout tab.
+        /// </summary>
         public static string Notice => _notice;
 
+        /// <summary>
+        /// Sets the status message.
+        /// </summary>
         public static void SetNotice(string message)
         {
             _notice = message ?? "";
         }
 
+        /// <summary>
+        /// Forgets fabric choices and the message when the player leaves the cutting room.
+        /// </summary>
         public static void ClearVisit()
         {
             Assign.Clear();
@@ -290,6 +448,9 @@ namespace DressmakerAutoSew
             _notice = "";
         }
 
+        /// <summary>
+        /// The fabric chosen for this piece, or null.
+        /// </summary>
         public static object PatternFabric(object panel)
         {
             if (panel == null)
@@ -298,6 +459,9 @@ namespace DressmakerAutoSew
             return fabric;
         }
 
+        /// <summary>
+        /// Chooses the fabric for a piece (ignored for pieces that are already cut).
+        /// </summary>
         public static void SetPatternFabric(object panel, object fabric)
         {
             if (!IsUncutPattern(panel))
@@ -306,21 +470,36 @@ namespace DressmakerAutoSew
             Decided.Add(Id(panel));
         }
 
+        /// <summary>
+        /// Assigns the given fabric to every piece that has no choice yet.
+        /// </summary>
         public static void UseOpenFabric(List<object> patterns, object fabric)
         {
             Remember(patterns, fabric);
         }
 
+        /// <summary>
+        /// The Solve button: lay out all chosen pieces from scratch.
+        /// </summary>
         public static void Run(MonoBehaviour room, object game, List<object> fabrics, List<object> patterns, object showFabric)
         {
             RunPlacement(room, game, fabrics, patterns, showFabric, false);
         }
 
+        /// <summary>
+        /// The Optimize button: start from where the pieces are now (including hand-placed ones) and only
+        /// keep the result if it is better.
+        /// </summary>
         public static void Optimize(MonoBehaviour room, object game, List<object> fabrics, List<object> patterns, object showFabric)
         {
             RunPlacement(room, game, fabrics, patterns, showFabric, true);
         }
 
+        /// <summary>
+        /// Starts a placement. Ignores the press if one is already running, unless the old one died
+        /// (its heartbeat stopped and its search finished). Saves every piece's pose, then starts the Solve
+        /// coroutine on the hidden runner, wrapped in Guarded, and returns at once, so the game keeps running.
+        /// </summary>
         static void RunPlacement(MonoBehaviour room, object game, List<object> fabrics, List<object> patterns, object showFabric, bool optimize)
         {
             // A routine that hasn't checked in for a few frames was stopped by Unity
@@ -366,6 +545,11 @@ namespace DressmakerAutoSew
                 Finish));
         }
 
+            /// <summary>
+            /// Runs a coroutine step by step and catches its errors. C# doesn't allow "yield return" inside a
+            /// try block that has a catch, so the try wraps only MoveNext, and the yield stays outside.
+            /// Records the heartbeat on every step, calls onError if a step throws, and always calls onDone.
+            /// </summary>
             // Runs a coroutine step by step, catching errors that a try/catch
             // around yield can't. Always calls onDone at the end.
             static IEnumerator Guarded(IEnumerator inner, Action<Exception> onError, Action onDone)
@@ -390,6 +574,10 @@ namespace DressmakerAutoSew
                 onDone();
             }
 
+            /// <summary>
+            /// After an error: puts every piece back where it was before Solve (skipping pieces the player cut
+            /// meanwhile), and shows the error in the status message.
+            /// </summary>
             static void Restore(MonoBehaviour room, object showFabric, List<SavedPose> saved, Exception ex)
             {
                 foreach (SavedPose pose in saved)
@@ -425,6 +613,9 @@ namespace DressmakerAutoSew
                 }
             }
 
+            /// <summary>
+            /// Ends a placement: clears the running state and makes the Layout tab redraw with the final message.
+            /// </summary>
             static void Finish()
             {
                 _nestClock = null;
@@ -432,6 +623,14 @@ namespace DressmakerAutoSew
                 PlaceBoard.Refresh();
             }
 
+        /// <summary>
+        /// The whole placement, as a coroutine (it can pause between frames with "yield return").
+        /// For each fabric: show it, measure the usable cloth (Cloth), turn its pieces into stamps
+        /// (TryMakePiece), build the grid of what's already taken (Blocked), run the search on a background
+        /// Task and wait for it frame by frame. Then, back on the main thread: stop if the player left or cut
+        /// a piece, re-read the grid, validate, move the pieces (Put), sort leftovers by reason (too wide,
+        /// trim needed, too short) and snap the placed pieces together. Finally build the status message.
+        /// </summary>
         static IEnumerator Solve(MonoBehaviour room, object game, List<object> fabrics, List<object> patterns, object showFabric, bool optimize)
         {
             int placed = 0;
@@ -669,6 +868,14 @@ namespace DressmakerAutoSew
             Plugin.Log.LogInfo(_notice);
         }
 
+        /// <summary>
+        /// The search for Solve (runs on a background thread; touches no Unity objects).
+        /// 1. Tries several piece orders with Greedy; keeps the best (Consider). The first order (biggest
+        ///    first) always finishes; for it, FillHoles also tries to add missing pieces.
+        /// 2. For 3 pieces or fewer, Dive tries every possibility.
+        /// 3. Improve, Settle, FillHoles, Settle again to tighten the best layout.
+        /// The time budget grows with the number of pieces, from 4 s up to 10 s.
+        /// </summary>
         static List<Choice> Search(List<Piece> pieces, Grid blocked, int cols, int rows)
         {
             Best.Clear();
@@ -735,11 +942,19 @@ namespace DressmakerAutoSew
             return new List<Choice>(Best);
         }
 
+        /// <summary>
+        /// Is a new layout better than the player's current one? More pieces placed wins; with the same
+        /// count, it must be at least one cell shorter.
+        /// </summary>
         static bool ImprovesBaseline(int count, float length, int baselineCount, float baselineLength)
         {
             return count > baselineCount || (count == baselineCount && length < baselineLength - Cell);
         }
 
+        /// <summary>
+        /// The search for Optimize: starts from the current layout (the seed) instead of an empty fabric.
+        /// Adds missing pieces, then improves and settles that arrangement.
+        /// </summary>
         static List<Choice> SearchFromSeed(List<Piece> pieces, Grid blocked, int cols, int rows, List<Choice> seed)
         {
             Best.Clear();
@@ -765,6 +980,12 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Converts the pieces already on this fabric into a layout (the seed for Optimize): finds each
+        /// piece's grid position and adds its current rotation as an extra orientation. Returns false if
+        /// some placement doesn't fit the grid (e.g. pieces closer than the grid allows after Snap);
+        /// those pieces are then re-planned.
+        /// </summary>
         static bool CaptureSeed(List<Piece> pieces, object fabric, Grid blocked, int cols, int rows,
             float left, float bottom, out List<Choice> seed, out float actualLength)
         {
@@ -807,6 +1028,10 @@ namespace DressmakerAutoSew
             return valid;
         }
 
+        /// <summary>
+        /// Slow fallback: tries every square of the fabric, for when the anchor search found nothing
+        /// (a coarse search can jump over a narrow notch). Stops at the time budget.
+        /// </summary>
         // A coarse stride can jump over a narrow notch. This fallback visits every
         // raster anchor, bounded by the same search deadline and current best edge.
         static NestHit DenseSpot(Piece piece, Grid grid, int cols, int rows, float length, int top)
@@ -837,6 +1062,9 @@ namespace DressmakerAutoSew
             return best;
         }
 
+        /// <summary>
+        /// How much fabric a layout uses: the rightmost edge of any piece, in meters.
+        /// </summary>
         static float LayoutLength(List<Piece> pieces, List<Choice> layout)
         {
             float length = 0f;
@@ -848,11 +1076,19 @@ namespace DressmakerAutoSew
             return length;
         }
 
+        /// <summary>
+        /// Right edge, in meters from the fabric's start, of a stamp placed at this column.
+        /// </summary>
         static float Edge(Stamp stamp, int col)
         {
             return (col + stamp.MaxX + 1) * Cell;
         }
 
+        /// <summary>
+        /// Exhaustive backtracking search, only for 3 pieces or fewer (exponential, but tiny there).
+        /// Recursively tries every piece, orientation and anchor; paints, recurses, then unpaints (undo).
+        /// Prunes branches that can't beat the best layout, and stops after NodeBudget steps.
+        /// </summary>
         static void Dive(List<Piece> pieces, Grid grid, int cols, int rows, bool[] used, List<int> undo, List<Choice> current, float length, int placed)
         {
             if (_nodes > NodeBudget || NestTimedOut())
@@ -904,6 +1140,11 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Greedy placement: takes the pieces in the given order and puts each one at its best spot right
+        /// now (BestSpot), never revisiting earlier choices. Pieces with no spot are skipped.
+        /// Roughly O(n x grid size) per order.
+        /// </summary>
         static List<Choice> Greedy(List<Piece> pieces, Grid blocked, int cols, int rows, int[] order, List<Vector2Int> initialAnchors)
         {
             Grid grid = blocked.Clone();
@@ -925,6 +1166,11 @@ namespace DressmakerAutoSew
             return layout;
         }
 
+        /// <summary>
+        /// The best place for one piece on the current grid: tries every orientation at every anchor
+        /// (free corner). If none fits and everyCell is set, also tries free squares.
+        /// Returns false if the piece doesn't fit anywhere.
+        /// </summary>
         static bool BestSpot(Piece piece, Grid grid, int cols, int rows, float length, bool everyCell, List<Vector2Int> initialAnchors, out int orient, out int col, out int row, out float next)
         {
             orient = 0;
@@ -942,6 +1188,11 @@ namespace DressmakerAutoSew
             return found;
         }
 
+        /// <summary>
+        /// Scores each orientation at each anchor. Best = least fabric length used; on a tie, lower, then
+        /// further left. Anchors are sorted by column, so once one is worse than the best, all later ones
+        /// are too (early break). Probe rejects most spots after checking only a few cells.
+        /// </summary>
         static bool ScoreAnchors(Piece piece, Grid grid, int cols, int rows, float length, List<Vector2Int> anchors, ref int orient, ref int col, ref int row, ref float next, ref float bestLength, ref int bestRow, ref int bestCol, bool sortedByColumn)
         {
             bool found = false;
@@ -976,6 +1227,11 @@ namespace DressmakerAutoSew
             return found;
         }
 
+        /// <summary>
+        /// Lifts each piece out in turn, repaints all the others, and moves the piece to its best spot if
+        /// that is better (shorter, or lower/further left). Up to 6 passes, until nothing moves.
+        /// O(n squared) per pass, because every piece repaints all the others.
+        /// </summary>
         static List<Choice> Improve(List<Piece> pieces, Grid blocked, int cols, int rows, List<Choice> layout)
         {
             var current = new List<Choice>(layout);
@@ -1018,6 +1274,10 @@ namespace DressmakerAutoSew
             return current;
         }
 
+        /// <summary>
+        /// A candidate position from SearchPose, with its score: Length (fabric used), Top (height used)
+        /// and Pull (column + row; smaller means further down and left).
+        /// </summary>
         struct NestHit
         {
             public bool Found;
@@ -1029,6 +1289,9 @@ namespace DressmakerAutoSew
             public int Pull;
         }
 
+        /// <summary>
+        /// Tries to add the pieces a layout is missing: anchor search first, then the slow DenseSpot.
+        /// </summary>
         static List<Choice> FillHoles(List<Piece> pieces, Grid blocked, int cols, int rows, List<Choice> layout)
         {
             Grid grid = blocked.Clone();
@@ -1072,6 +1335,10 @@ namespace DressmakerAutoSew
             return filled;
         }
 
+        /// <summary>
+        /// Like Improve, but searches positions more finely (SearchPose), so pieces can drop into notches
+        /// next to curved neighbours. Up to 4 passes, alternating small-first and big-first order.
+        /// </summary>
         // Lift each placed piece and sit it on the curve that keeps the most cloth on the bolt.
         static List<Choice> Settle(List<Piece> pieces, Grid blocked, int cols, int rows, List<Choice> layout)
         {
@@ -1099,6 +1366,10 @@ namespace DressmakerAutoSew
             return current;
         }
 
+        /// <summary>
+        /// Moves one piece (current[index]) to a better position if SearchPose finds one: repaints all the
+        /// other pieces onto the reused grid, then searches. Returns true if the piece moved.
+        /// </summary>
         static bool NestOne(List<Piece> pieces, Grid blocked, int cols, int rows, List<Choice> current, int index, Grid grid, List<int> undo)
         {
             Choice held = current[index];
@@ -1127,6 +1398,9 @@ namespace DressmakerAutoSew
             return true;
         }
 
+        /// <summary>
+        /// The order in which Settle visits pieces: by area, small first or big first.
+        /// </summary>
         static int[] NestOrder(List<Piece> pieces, List<Choice> layout, bool smallFirst)
         {
             var order = new int[layout.Count];
@@ -1141,6 +1415,10 @@ namespace DressmakerAutoSew
             return order;
         }
 
+        /// <summary>
+        /// True when the search's time budget is used up (also sets _searchLimited).
+        /// Always false while _mustFinish is set.
+        /// </summary>
         static bool NestTimedOut()
         {
             if (_mustFinish)
@@ -1151,6 +1429,12 @@ namespace DressmakerAutoSew
             return expired;
         }
 
+        /// <summary>
+        /// Finds the best position for one piece by scanning the grid in strides (every 2nd, 3rd or 5th
+        /// square), nudging each fitting candidate down and left, and scoring it.
+        /// Starts with the current position (the seed) as the best, and prunes: columns and rows that
+        /// can't beat the best are skipped. That pruning took this from about 1.8 s to 0.17 s.
+        /// </summary>
         static NestHit SearchPose(Piece piece, Grid grid, int cols, int rows, float baseLength, int baseTop, bool hasSeed, int seedOrient, int seedCol, int seedRow)
         {
             var best = new NestHit();
@@ -1214,6 +1498,9 @@ namespace DressmakerAutoSew
             return FinishPose(grid, cols, rows, piece, best, baseLength, baseTop);
         }
 
+        /// <summary>
+        /// Nudges the chosen position as far down and left as it goes, and re-scores it.
+        /// </summary>
         static NestHit FinishPose(Grid grid, int cols, int rows, Piece piece, NestHit best, float baseLength, int baseTop)
         {
             if (!best.Found)
@@ -1225,6 +1512,9 @@ namespace DressmakerAutoSew
             return ScoreOf(stamp, best.Orient, col, row, baseLength, baseTop);
         }
 
+        /// <summary>
+        /// Builds the score of a position: fabric length, height and pull.
+        /// </summary>
         static NestHit ScoreOf(Stamp stamp, int orient, int col, int row, float baseLength, int baseTop)
         {
             return new NestHit
@@ -1239,6 +1529,9 @@ namespace DressmakerAutoSew
             };
         }
 
+        /// <summary>
+        /// Compares positions: less length wins; then less height; then smaller pull (further down-left).
+        /// </summary>
         static bool Better(float length, int top, int pull, NestHit best)
         {
             if (!best.Found)
@@ -1254,6 +1547,10 @@ namespace DressmakerAutoSew
             return pull < best.Pull;
         }
 
+        /// <summary>
+        /// Step size for SearchPose: bigger pieces are scanned more coarsely, since they can't fit into
+        /// tiny gaps anyway.
+        /// </summary>
         static int StrideFor(Stamp stamp)
         {
             int count = stamp.Cells.Length;
@@ -1264,6 +1561,10 @@ namespace DressmakerAutoSew
             return 5;
         }
 
+        /// <summary>
+        /// Slides a stamp left, then down, one square at a time while the edge squares (Left/Down) are free,
+        /// for a few rounds. Like dropping the piece into the corner it is next to.
+        /// </summary>
         static void Nudge(Grid grid, Stamp stamp, int cols, int rows, ref int col, ref int row, int steps, int rounds)
         {
             if (stamp.Left == null || stamp.Down == null)
@@ -1296,6 +1597,10 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// True if all these edge squares are free at this position. Checking only the edge is enough to
+        /// know whether a one-square move is possible.
+        /// </summary>
         static bool Clear(Grid grid, Vector2Int[] frontier, int col, int row, int cols, int rows)
         {
             if (frontier == null || frontier.Length == 0)
@@ -1312,6 +1617,11 @@ namespace DressmakerAutoSew
             return true;
         }
 
+        /// <summary>
+        /// Fast "does it fit?": checks about 16 sampled squares first and rejects as soon as one is taken.
+        /// If the samples are all free, does the full check (Fits). Same answer as Fits, much faster for
+        /// the common case of a spot that doesn't fit.
+        /// </summary>
         static bool Probe(Grid grid, Stamp stamp, int col, int row, int cols, int rows)
         {
             if (col < 0 || row < 0 || col + stamp.MaxX >= cols || row + stamp.MaxY >= rows)
@@ -1330,6 +1640,10 @@ namespace DressmakerAutoSew
             return Fits(grid, stamp, col, row, cols, rows);
         }
 
+        /// <summary>
+        /// Keeps a layout if it beats the best so far. Order of importance: more pieces placed; then less
+        /// fabric length; then lower height; then tighter (smaller sum of columns and rows).
+        /// </summary>
         static void Consider(List<Piece> pieces, List<Choice> layout, int count, float length)
         {
             float top = 0f;
@@ -1355,6 +1669,12 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// The piece orders Greedy tries: biggest first (the list is already sorted by area), smallest
+        /// first, widest first, tallest first, then random shuffles with a fixed seed (17), so the same
+        /// dress always gives the same result. Up to 4 pieces: every possible order.
+        /// Fewer shuffles for big dresses (12 above 12 pieces, 6 above 40), so time is left for Improve.
+        /// </summary>
         static List<int[]> Orders(List<Piece> pieces)
         {
             int count = pieces.Count;
@@ -1398,6 +1718,10 @@ namespace DressmakerAutoSew
             return orders;
         }
 
+        /// <summary>
+        /// Generates every ordering of the pieces by swapping (recursive). Only used for 4 pieces or fewer,
+        /// since n! grows extremely fast.
+        /// </summary>
         static void Permute(int[] order, int start, List<int[]> orders, HashSet<string> seen)
         {
             if (start >= order.Length)
@@ -1417,6 +1741,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Up to 500 free squares, row by row. Used as a fallback list of candidate positions.
+        /// </summary>
         static List<Vector2Int> FreeCells(Grid grid, int cols, int rows)
         {
             var cells = new List<Vector2Int>();
@@ -1434,12 +1761,18 @@ namespace DressmakerAutoSew
             return cells;
         }
 
+        /// <summary>
+        /// Adds an order to the list unless the same order is already in it.
+        /// </summary>
         static void AddOrder(List<int[]> orders, HashSet<string> seen, int[] order)
         {
             if (seen.Add(Key(order)))
                 orders.Add(order);
         }
 
+        /// <summary>
+        /// The order 0, 1, 2, ..., count - 1.
+        /// </summary>
         static int[] Range(int count)
         {
             var order = new int[count];
@@ -1448,11 +1781,21 @@ namespace DressmakerAutoSew
             return order;
         }
 
+        /// <summary>
+        /// An order as text, e.g. "3,0,2,1", for duplicate checks.
+        /// </summary>
         static string Key(int[] order)
         {
             return string.Join(",", order);
         }
 
+        /// <summary>
+        /// Candidate positions: free squares that have something taken (or the fabric edge) to their left
+        /// AND below. A piece put there sits snugly in a corner. Listed column by column, so they come
+        /// sorted left to right. Also always offers the bottom of the first empty column after the placed
+        /// pieces, so a piece can always go onto fresh cloth (without it, curved pieces left no anchor and
+        /// greedy placed only 5 to 21 of 28 pieces).
+        /// </summary>
         static List<Vector2Int> Anchors(Grid grid, int cols, int rows, int limit = 0)
         {
             var anchors = new List<Vector2Int>();
@@ -1491,6 +1834,9 @@ namespace DressmakerAutoSew
             return anchors;
         }
 
+        /// <summary>
+        /// Exact check: is every square of the stamp inside the fabric and free at this position?
+        /// </summary>
         static bool Fits(Grid grid, Stamp stamp, int col, int row, int cols, int rows)
         {
             if (col < 0 || row < 0 || col + stamp.MaxX >= cols || row + stamp.MaxY >= rows)
@@ -1505,6 +1851,10 @@ namespace DressmakerAutoSew
             return stamp.Cells.Length > 0;
         }
 
+        /// <summary>
+        /// Marks a stamp's squares as taken, plus its halo (the Gap margin). Every changed index is added
+        /// to undo, so Unpaint can reverse it exactly.
+        /// </summary>
         static void Paint(Grid grid, Stamp stamp, int col, int row, int cols, int id, List<int> undo)
         {
             int rows = grid.Length / cols;
@@ -1521,6 +1871,9 @@ namespace DressmakerAutoSew
             Expand(grid, cols, stamp, col, row, undo);
         }
 
+        /// <summary>
+        /// Marks the stamp's halo squares (its precomputed outline ring) as taken.
+        /// </summary>
         static void Expand(Grid grid, int cols, Stamp stamp, int col, int row, List<int> undo)
         {
             int rows = grid.Length / cols;
@@ -1538,6 +1891,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Reverses painting back to an earlier point (mark) in the undo list. Used by backtracking.
+        /// </summary>
         static void Unpaint(Grid grid, List<int> undo, int mark)
         {
             for (int i = undo.Count - 1; i >= mark; i--)
@@ -1545,6 +1901,10 @@ namespace DressmakerAutoSew
             undo.RemoveRange(mark, undo.Count - mark);
         }
 
+        /// <summary>
+        /// Builds the grid for one fabric, with everything that is already taken marked: pieces placed on
+        /// it that this Solve isn't moving, and holes left by pieces cut earlier.
+        /// </summary>
         static Grid Blocked(MonoBehaviour room, object fabric, List<object> patterns, float left, float bottom, float length, float height, out int cols, out int rows)
         {
             if (float.IsNaN(length) || float.IsInfinity(length) || float.IsNaN(height)
@@ -1603,6 +1963,9 @@ namespace DressmakerAutoSew
             return grid;
         }
 
+        /// <summary>
+        /// Marks a cut hole's bounding rectangle as taken.
+        /// </summary>
         static void PaintCutBounds(Grid grid, int cols, int rows, Bounds bounds, float left, float bottom)
         {
             var poly = new[]
@@ -1613,6 +1976,9 @@ namespace DressmakerAutoSew
             PaintPoly(grid, cols, rows, poly, left, bottom, 1);
         }
 
+        /// <summary>
+        /// Marks every square whose center lies inside a polygon as taken, plus a margin around it.
+        /// </summary>
         static void PaintPoly(Grid grid, int cols, int rows, Vector2[] poly, float left, float bottom, int id)
         {
             float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
@@ -1650,6 +2016,10 @@ namespace DressmakerAutoSew
             ExpandFilled(grid, cols, filled);
         }
 
+        /// <summary>
+        /// Turns a pattern into a Piece for the search: builds a stamp for each orientation the grain
+        /// allows. Normal pieces: grain horizontal (0 and 180 degrees). Bias-cut pieces: also vertical.
+        /// </summary>
         static bool TryMakePiece(object panel, out Piece piece)
         {
             piece = null;
@@ -1674,12 +2044,18 @@ namespace DressmakerAutoSew
             return true;
         }
 
+        /// <summary>
+        /// Adds this rotation and the same rotation turned 180 degrees.
+        /// </summary>
         static void AddOrient(List<Stamp> orients, object panel, Quaternion rotation, bool bias)
         {
             AddOne(orients, panel, rotation, bias);
             AddOne(orients, panel, Quaternion.AngleAxis(180f, Vector3.forward) * rotation, bias);
         }
 
+        /// <summary>
+        /// Adds one orientation if its grain direction is allowed.
+        /// </summary>
         static void AddOne(List<Stamp> orients, object panel, Quaternion rotation, bool bias)
         {
             if (!GrainOk(panel, rotation, bias))
@@ -1689,6 +2065,10 @@ namespace DressmakerAutoSew
                 orients.Add(stamp);
         }
 
+        /// <summary>
+        /// True if, at this rotation, the piece's grain line is horizontal (or also vertical for bias cut),
+        /// within about 8 degrees.
+        /// </summary>
         static bool GrainOk(object panel, Quaternion rotation, bool bias)
         {
             if (!(GameAccess.Member(panel, "idealGrainDirection") is Vector3 grain) || grain.sqrMagnitude < 0.0001f)
@@ -1705,6 +2085,11 @@ namespace DressmakerAutoSew
             return right > 0.99f;
         }
 
+        /// <summary>
+        /// Turns a piece at a rotation into a Stamp: takes the mesh triangles, marks every square they
+        /// cover, then precomputes the left edge, bottom edge and halo ring. Squares are rounded outward,
+        /// so a stamp is never smaller than the real shape.
+        /// </summary>
         static Stamp BuildStamp(object panel, Quaternion rotation)
         {
             if (!Sample(panel, rotation, out Vector2[] points, out int[] tris))
@@ -1780,6 +2165,10 @@ namespace DressmakerAutoSew
             };
         }
 
+        /// <summary>
+        /// Makes sure the piece is shown on the table as a 3D object (not just in the pattern menu)
+        /// and returns that object. Throws if it doesn't appear.
+        /// </summary>
         static GameObject EnsureWorld(object panel)
         {
             var world = GameAccess.Member(panel, "WorldObj") as GameObject;
@@ -1792,6 +2181,10 @@ namespace DressmakerAutoSew
             return world;
         }
 
+        /// <summary>
+        /// Re-checks a layout against the current grid and drops any placement that no longer fits
+        /// (the player may have moved pieces during the search).
+        /// </summary>
         static List<Choice> ValidateLayout(List<Piece> pieces, Grid blocked, int cols, int rows, List<Choice> layout)
         {
             Grid grid = blocked.Clone();
@@ -1816,6 +2209,10 @@ namespace DressmakerAutoSew
             return accepted;
         }
 
+        /// <summary>
+        /// Moves a piece on the table: sets the stamp's rotation, then shifts it so its bottom-left corner
+        /// lands exactly at (minX, minY). z sets the drawing order.
+        /// </summary>
         static void Put(Piece piece, Stamp stamp, float minX, float minY, float z)
         {
             piece.World = EnsureWorld(piece.Panel);
@@ -1829,6 +2226,9 @@ namespace DressmakerAutoSew
             world.position = position;
         }
 
+        /// <summary>
+        /// The piece's bounding box in world coordinates, from its mesh (or its outline if there is no mesh).
+        /// </summary>
         static void Extents(object panel, Transform world, out float minX, out float minY, out float maxX, out float maxY)
         {
             minX = float.MaxValue;
@@ -1860,6 +2260,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Marks the squares covered by a piece that already lies on the fabric, plus its margin.
+        /// </summary>
         static void PaintPlaced(Grid grid, int cols, int rows, object panel, float left, float bottom)
         {
             var worldGo = GameAccess.Member(panel, "WorldObj") as GameObject;
@@ -1877,6 +2280,9 @@ namespace DressmakerAutoSew
             ExpandFilled(grid, cols, filled);
         }
 
+        /// <summary>
+        /// Adds the Gap margin around a filled area (the slower, general version of Expand).
+        /// </summary>
         static void ExpandFilled(Grid grid, int cols, bool[] filled)
         {
             int rows = grid.Length / cols;
@@ -1907,6 +2313,10 @@ namespace DressmakerAutoSew
                 grid[index] = 1;
         }
 
+        /// <summary>
+        /// The piece's shape in world coordinates at a rotation: mesh vertices and triangles, or its outline
+        /// points if there is no mesh. Temporarily rotates the object and always restores it (finally).
+        /// </summary>
         // The collider path is one boundary loop and can leave the paper interior empty, so the stamp is the mesh triangles.
         static bool Sample(object panel, Quaternion rotation, out Vector2[] points, out int[] tris)
         {
@@ -1956,6 +2366,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// The pattern mesh's vertices, or null if unavailable.
+        /// </summary>
         static Vector3[] MeshVerts(object panel)
         {
             try
@@ -1972,6 +2385,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// The pattern mesh's triangles (three vertex indices each), or null if unavailable.
+        /// </summary>
         static int[] MeshTris(object panel)
         {
             try
@@ -1988,6 +2404,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// The bounding box of a set of points.
+        /// </summary>
         static void BoundsOf(Vector2[] points, out float minX, out float minY, out float maxX, out float maxY)
         {
             minX = float.MaxValue;
@@ -2003,6 +2422,10 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Rasterizes a shape: marks every square it covers. With triangles, each triangle is covered;
+        /// otherwise the outline is traced and squares whose center is inside are marked.
+        /// </summary>
         static void Cover(bool[] filled, int width, int height, float originX, float originY, Vector2[] points, int[] tris)
         {
             if (points == null || points.Length < 3)
@@ -2038,6 +2461,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Marks the squares of one triangle: its three edges, plus every square whose center is inside it.
+        /// </summary>
         static void CoverTri(bool[] filled, int width, int height, float originX, float originY, Vector2 a, Vector2 b, Vector2 c)
         {
             Walk(filled, width, height, originX, originY, a, b);
@@ -2062,6 +2488,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Marks every square a line segment passes through (samples it every half square).
+        /// </summary>
         static void Walk(bool[] filled, int width, int height, float originX, float originY, Vector2 a, Vector2 b)
         {
             float dist = Vector2.Distance(a, b);
@@ -2077,6 +2506,10 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Point-in-triangle test: p is inside if it is on the same side of all three edges
+        /// (the cross products all have the same sign).
+        /// </summary>
         static bool InTri(Vector2 p, Vector2 a, Vector2 b, Vector2 c)
         {
             float c0 = Cross(b - a, p - a);
@@ -2088,11 +2521,17 @@ namespace DressmakerAutoSew
             return !(neg && pos);
         }
 
+        /// <summary>
+        /// 2D cross product: positive if b turns left from a, negative if right.
+        /// </summary>
         static float Cross(Vector2 a, Vector2 b)
         {
             return a.x * b.y - a.y * b.x;
         }
 
+        /// <summary>
+        /// The rotation that turns the piece so its grain line points in the given direction.
+        /// </summary>
         static Quaternion FlatGrain(object panel, Transform world, Vector3 direction)
         {
             if (!(GameAccess.Member(panel, "idealGrainDirection") is Vector3 grain) || grain.sqrMagnitude < 0.0001f)
@@ -2106,6 +2545,10 @@ namespace DressmakerAutoSew
             return Quaternion.AngleAxis(turn, Vector3.forward) * world.rotation;
         }
 
+        /// <summary>
+        /// Point-in-polygon test (ray casting): counts how many polygon edges a horizontal ray from the
+        /// point crosses. An odd count means inside.
+        /// </summary>
         static bool Inside(Vector2[] poly, Vector2 point)
         {
             bool inside = false;
@@ -2118,6 +2561,11 @@ namespace DressmakerAutoSew
             return inside;
         }
 
+        /// <summary>
+        /// The usable area of a fabric on the table, in world coordinates. The length is the part that is
+        /// open: min(remaining fabric, maximumFabricLength), the game's own rule, and never past the drawn
+        /// fabric. Sets _lengthCapped when more fabric exists beyond the table (a trim would open more).
+        /// </summary>
         static bool Cloth(MonoBehaviour room, object fabricPiece, out float left, out float bottom, out float length, out float height)
         {
             left = bottom = length = height = 0f;
@@ -2154,6 +2602,9 @@ namespace DressmakerAutoSew
             return length > 0.15f && height > 0.15f;
         }
 
+        /// <summary>
+        /// Makes the cutting table show this fabric.
+        /// </summary>
         static void ShowFabric(MonoBehaviour room, object fabric)
         {
             if (fabric == null)
@@ -2168,6 +2619,9 @@ namespace DressmakerAutoSew
             AccessTools.Method(room.GetType(), "UpdateDisplayedFabric")?.Invoke(room, null);
         }
 
+        /// <summary>
+        /// Unrolls the fabric on the table far enough to show the placed pieces.
+        /// </summary>
         static void Unroll(MonoBehaviour room, object fabric, float used)
         {
             var cloth = GameAccess.Member(room, "Fabric") as GameObject;
@@ -2181,6 +2635,9 @@ namespace DressmakerAutoSew
             GameAccess.SetMember(room, "_unrolling", true);
         }
 
+        /// <summary>
+        /// The Reset button: sends every uncut piece back to the pattern menu.
+        /// </summary>
         public static void ReturnPieces(List<object> patterns)
         {
             if (patterns == null)
@@ -2191,6 +2648,9 @@ namespace DressmakerAutoSew
             _notice = "";
         }
 
+        /// <summary>
+        /// Sends one piece back to the pattern menu. Throws if the game didn't do it.
+        /// </summary>
         static void ReturnToMenu(object panel)
         {
             if (panel == null)
@@ -2200,6 +2660,9 @@ namespace DressmakerAutoSew
                 throw new InvalidOperationException("A pattern could not be returned to the menu.");
         }
 
+        /// <summary>
+        /// Gives undecided pieces the selected fabric, and forgets pieces that no longer exist.
+        /// </summary>
         public static void Remember(List<object> patterns, object selected)
         {
             var live = new HashSet<int>();
@@ -2225,6 +2688,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// True for a piece that can still be placed: not cut, not being cut, and not on the mannequin.
+        /// </summary>
         static bool IsUncutPattern(object panel)
         {
             return panel != null && !GameAccess.Bool(panel, "HasBeenCut")
@@ -2234,6 +2700,9 @@ namespace DressmakerAutoSew
                 && !GameAccess.Bool(panel, "PlacedOnMannequin");
         }
 
+        /// <summary>
+        /// Only the pieces that can still be placed.
+        /// </summary>
         static List<object> UncutPatterns(List<object> patterns)
         {
             var live = new List<object>();
@@ -2244,6 +2713,9 @@ namespace DressmakerAutoSew
             return live;
         }
 
+        /// <summary>
+        /// The current dress's pieces that can still be placed.
+        /// </summary>
         public static List<object> Patterns(object game)
         {
             var list = new List<object>();
@@ -2259,6 +2731,9 @@ namespace DressmakerAutoSew
             return list;
         }
 
+        /// <summary>
+        /// All fabrics the player owns: from the save data, the sidebar, and the fabric on the table.
+        /// </summary>
         public static List<object> Fabrics()
         {
             var list = new List<object>();
@@ -2290,6 +2765,9 @@ namespace DressmakerAutoSew
             return list;
         }
 
+        /// <summary>
+        /// The fabric on the table, or the first owned fabric if none is shown.
+        /// </summary>
         public static object OpenFabric(MonoBehaviour room)
         {
             object shown = room == null ? null : AccessTools.Method(room.GetType(), "GetCurrentDisplayedFabricPiece")?.Invoke(room, null);
@@ -2299,6 +2777,9 @@ namespace DressmakerAutoSew
             return fabrics.Count > 0 ? fabrics[0] : null;
         }
 
+        /// <summary>
+        /// True if this exact fabric object is in the list (compares identity, not names).
+        /// </summary>
         public static bool ContainsFabric(List<object> fabrics, object fabric)
         {
             foreach (object piece in fabrics)
@@ -2309,11 +2790,17 @@ namespace DressmakerAutoSew
             return false;
         }
 
+        /// <summary>
+        /// A stable ID for a piece (Unity's instance ID), used as the key in Assign.
+        /// </summary>
         static int Id(object panel)
         {
             return panel is UnityEngine.Object unity ? unity.GetInstanceID() : panel.GetHashCode();
         }
 
+        /// <summary>
+        /// The piece's display name, or "Pattern".
+        /// </summary>
         public static string NameOf(object panel)
         {
             try
@@ -2327,11 +2814,17 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Fabric name plus remaining length, e.g. "Coral Cotton   16.8m".
+        /// </summary>
         public static string FabricLabel(object piece)
         {
             return ShortFabric(piece) + "   " + GameAccess.Float(piece, "length", 0f).ToString("0.0") + "m";
         }
 
+        /// <summary>
+        /// The fabric's display name, or "Fabric".
+        /// </summary>
         public static string ShortFabric(object piece)
         {
             object fabric = GameAccess.Member(piece, "fabric");
@@ -2339,6 +2832,9 @@ namespace DressmakerAutoSew
             return string.IsNullOrWhiteSpace(name) ? "Fabric" : name;
         }
 
+        /// <summary>
+        /// True if the player starred this fabric in the sketchbook for the current order.
+        /// </summary>
         public static bool IsStarred(object piece)
         {
             object fabric = GameAccess.Member(piece, "fabric");
@@ -2356,6 +2852,9 @@ namespace DressmakerAutoSew
         }
         
     }
+    /// <summary>
+    /// An empty component on a hidden object, used only to run AutoSew's coroutines (see Runner).
+    /// </summary>
     // A hidden object only AutoSew uses, so the game can't stop our coroutines.
     sealed class AutoSewRunner : MonoBehaviour { }
 }

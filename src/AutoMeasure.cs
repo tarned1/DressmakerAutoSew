@@ -5,17 +5,41 @@ using UnityEngine;
 
 namespace DressmakerAutoSew
 {
+    /// <summary>
+    /// Auto measure: on the measuring screen, F4 measures the client's bust, waist and hips.
+    /// It is a state machine (one step per frame) that goes through three zones in order:
+    /// take the tape out and wait for the camera, find the band on the body, move the tape there,
+    /// hold it still for 0.6 s, check the reading didn't change, then write it with the game's own
+    /// SetBustMeasurement (etc.). Every step has a time limit, so it stops cleanly instead of looping.
+    /// Also holds tape helpers that AutoMannequin reuses (EnsureTapeOut, MoveTape, Sample, Release).
+    /// </summary>
     public static class AutoMeasure
     {
+        /// <summary>
+        /// How long one zone may take before the pass gives up.
+        /// </summary>
         const float ZoneSeconds = 8f;
+        /// <summary>
+        /// Game member names per zone (index 0 bust, 1 waist, 2 hips): the paper's value slots,
+        /// the body hitboxes, the markers and the setter methods.
+        /// </summary>
         static readonly string[] Slots = { "bustValue", "waistValue", "hipsValue" };
         static readonly string[] Boxes = { "bustHitbox", "waistHitbox", "hipsHitbox" };
         static readonly string[] Markers = { "bustMarker", "waistMarker", "hipsMarker" };
         static readonly string[] Setters = { "SetBustMeasurement", "SetWaistMeasurement", "SetHipsMeasurement" };
 
+        /// <summary>
+        /// True after F4 started a pass and until it is cancelled.
+        /// </summary>
         static bool _requested;
+        /// <summary>
+        /// True while a pass is running (started, not stopped by an error, not finished).
+        /// </summary>
         public static bool IsActive => _requested && !_halted && !_completed;
 
+        /// <summary>
+        /// Called by F4. Starts a new pass on this measurer if the feature is on and a paper exists.
+        /// </summary>
         public static bool Start(MonoBehaviour measurer)
         {
             if (!Plugin.MeasureEnabled || measurer == null || GameAccess.Member(measurer, "paper") == null)
@@ -27,6 +51,10 @@ namespace DressmakerAutoSew
             return true;
         }
 
+        /// <summary>
+        /// State of the pass: which zone (0 to 2), whether the tape is placed, whether the value was written,
+        /// when the hold started, and which measurer and paper this pass belongs to.
+        /// </summary>
         static int _zone;
         static bool _armed;
         static bool _running;
@@ -46,6 +74,10 @@ namespace DressmakerAutoSew
         static MonoBehaviour _measurer;
         static object _paper;
 
+        /// <summary>
+        /// Harmony postfix on PersonMeasurer.Update, every frame on the measuring screen.
+        /// Runs one step of the state machine; any error stops the pass and puts the tape away.
+        /// </summary>
         public static void Tick(MonoBehaviour __instance)
         {
             if (Time.timeScale <= 0f && Plugin.MeasureEnabled)
@@ -63,6 +95,12 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// One step of the pass. In order: stop if the feature was turned off; ignore other measurers and
+        /// the mannequin screen; make sure the tape is out and the camera zoomed in; if this zone already
+        /// has a value, move to the next zone; otherwise find the band and place the tape, wait 0.6 s with
+        /// the tape still, check the reading, and write it.
+        /// </summary>
         static void TickSafe(MonoBehaviour measurer)
         {
             if (!Plugin.MeasureEnabled)
@@ -212,6 +250,9 @@ namespace DressmakerAutoSew
             _wrote = true;
         }
 
+        /// <summary>
+        /// Halts the pass if the current zone has taken longer than ZoneSeconds. Returns true if it halted.
+        /// </summary>
         static bool Stall(MonoBehaviour measurer, string reason)
         {
             if (_zoneSince <= 0f || Time.time - _zoneSince < ZoneSeconds)
@@ -220,6 +261,9 @@ namespace DressmakerAutoSew
             return true;
         }
 
+        /// <summary>
+        /// Stops the pass because of a problem: puts the tape away and logs why.
+        /// </summary>
         static void Halt(MonoBehaviour measurer, string reason)
         {
             Release(measurer, false);
@@ -231,6 +275,9 @@ namespace DressmakerAutoSew
             _blockMeasure = false;
         }
 
+        /// <summary>
+        /// Resets all pass state to the start.
+        /// </summary>
         static void Clear()
         {
             _zone = 0;
@@ -251,6 +298,9 @@ namespace DressmakerAutoSew
             _paper = null;
         }
 
+        /// <summary>
+        /// Stops the pass on request (F4, switch off, new customer) and puts the tape away.
+        /// </summary>
         public static void Cancel()
         {
             _requested = false;
@@ -261,6 +311,10 @@ namespace DressmakerAutoSew
                 Plugin.Log.LogInfo("Auto measure stopped.");
         }
 
+        /// <summary>
+        /// Called by Plugin four times a second, even when the measuring scene has stopped updating.
+        /// Cancels the pass if the scene, measurer or paper it belongs to has changed.
+        /// </summary>
         // Called by the plugin even when the game's measurer no longer updates.
         public static void Maintain()
         {
@@ -278,11 +332,19 @@ namespace DressmakerAutoSew
                 Cancel();
         }
 
+        /// <summary>
+        /// True for a normal number (not NaN, not infinity).
+        /// </summary>
         static bool Finite(float value)
         {
             return !float.IsNaN(value) && !float.IsInfinity(value);
         }
 
+        /// <summary>
+        /// Harmony prefix on MeasurerCameraControl.LeaveMode. Returning false stops the game from zooming
+        /// the camera out in the middle of a pass. Only blocks the camera that belongs to the running pass,
+        /// and Release can allow it with _allowLeave.
+        /// </summary>
         public static bool LeaveModePrefix(object __instance)
         {
             if (_allowLeave)
@@ -293,11 +355,18 @@ namespace DressmakerAutoSew
                 || (_blockMannequin && AutoMannequin.OwnsCamera(__instance)));
         }
 
+        /// <summary>
+        /// Lets AutoMannequin block the camera zoom-out during its own pass.
+        /// </summary>
         public static void BlockMannequin(bool block)
         {
             _blockMannequin = block;
         }
 
+        /// <summary>
+        /// Puts the tape away and lets the camera zoom out. Each cleanup step runs separately, so one
+        /// failing step doesn't skip the others.
+        /// </summary>
         public static void Release(MonoBehaviour measurer, bool mannequin)
         {
             if (mannequin)
@@ -336,6 +405,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Runs one cleanup action and logs its error instead of throwing.
+        /// </summary>
         static void CleanupStep(string action, Action cleanup)
         {
             try { cleanup(); }
@@ -345,6 +417,10 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Calls a game method by name and throws if it doesn't exist. Use it where a missing method
+        /// must stop the operation (unlike AccessTools.Method(...)?.Invoke, which silently skips).
+        /// </summary>
         public static object InvokeRequired(object target, string name, params object[] args)
         {
             if (target == null)
@@ -355,6 +431,11 @@ namespace DressmakerAutoSew
             return method.Invoke(target, args);
         }
 
+        /// <summary>
+        /// Makes sure the tape is out of its icon, on the body, and the measuring camera is on.
+        /// Returns true if it already was; otherwise it starts the change and returns false,
+        /// so the caller tries again next frame.
+        /// </summary>
         public static bool EnsureTapeOut(MonoBehaviour measurer)
         {
             if (measurer == null)
@@ -388,6 +469,9 @@ namespace DressmakerAutoSew
             return false;
         }
 
+        /// <summary>
+        /// True when the measuring camera has finished zooming in (orthographic size 0.32 or less).
+        /// </summary>
         public static bool TapeSettled(MonoBehaviour measurer)
         {
             var cam = GameAccess.Member(measurer, "cam") as Camera;
@@ -396,12 +480,19 @@ namespace DressmakerAutoSew
             return cam.orthographicSize <= 0.32f;
         }
 
+        /// <summary>
+        /// True when a measurement slot on the paper has been set.
+        /// </summary>
         public static bool Has(object owner, string name)
         {
             object value = GameAccess.Member(owner, name);
             return value != null && GameAccess.Bool(value, "HasBeenSet");
         }
 
+        /// <summary>
+        /// Finds a point on the body for this zone's tape. First casts rays from the camera through the
+        /// zone's hitbox; then tries small offsets up and down; finally scans heights around the marker.
+        /// </summary>
         public static bool FindBandPoint(MonoBehaviour measurer, float preferredY, RectTransform zone, float along, out Vector3 point)
         {
             point = default;
@@ -437,6 +528,10 @@ namespace DressmakerAutoSew
             return false;
         }
 
+        /// <summary>
+        /// Moves the tape to this height, lets the game update it, and returns the reading in cm.
+        /// Fails if the game can't measure there or the reading didn't update.
+        /// </summary>
         public static bool MoveTape(MonoBehaviour measurer, Vector3 worldPoint, out float cm)
         {
             cm = 0f;
@@ -466,6 +561,10 @@ namespace DressmakerAutoSew
             return true;
         }
 
+        /// <summary>
+        /// Asks the game for the body's circumference at a height (TrySampleCircumferenceAt),
+        /// without moving the tape. False if there is no body at that height.
+        /// </summary>
         public static bool Sample(MonoBehaviour measurer, Vector3 around, out float cm)
         {
             cm = 0f;
@@ -484,6 +583,10 @@ namespace DressmakerAutoSew
             return true;
         }
 
+        /// <summary>
+        /// Tries heights from 18 cm below to 18 cm above the preferred one in 2 cm steps and returns
+        /// the first that can be measured.
+        /// </summary>
         static bool ScanHeight(MonoBehaviour measurer, float preferredY, out Vector3 point)
         {
             point = default;
@@ -502,6 +605,9 @@ namespace DressmakerAutoSew
             return false;
         }
 
+        /// <summary>
+        /// Casts a ray from the camera through a point and returns where it hits the body.
+        /// </summary>
         static bool RayToBody(Camera cam, Vector3 mid, int mask, out Vector3 point)
         {
             point = default;
@@ -520,6 +626,9 @@ namespace DressmakerAutoSew
             return false;
         }
 
+        /// <summary>
+        /// Converts a point to screen coordinates (large values are treated as already being on screen).
+        /// </summary>
         static Vector2 ToScreen(Camera cam, Vector3 mid)
         {
             if (Mathf.Abs(mid.x) > 8f || Mathf.Abs(mid.y) > 8f)
@@ -527,6 +636,10 @@ namespace DressmakerAutoSew
             return cam.WorldToScreenPoint(mid);
         }
 
+        /// <summary>
+        /// Sets the game's IsDraggingTape, through its setter if it has one, otherwise through the hidden
+        /// backing field the compiler creates for auto-properties.
+        /// </summary>
         static void SetDragging(object measurer, bool value)
         {
             const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;

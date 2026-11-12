@@ -7,32 +7,66 @@ using HarmonyLib;
 
 namespace DressmakerAutoSew
 {
+    /// <summary>
+    /// The mod's entry point. BepInEx creates one Plugin object when the game starts.
+    /// It creates the settings, installs the Harmony hooks that connect each feature to the game,
+    /// handles the F4 key, and runs a small maintenance check four times a second.
+    /// Everything else lives in the feature classes (AutoSew, AutoMeasure, AutoMannequin,
+    /// AutoPlace, PlaceBoard, PauseMenuOptions).
+    /// </summary>
     [BepInPlugin(Guid, Name, Version)]
     [BepInProcess("Dressmaker.exe")]
     [DefaultExecutionOrder(10000)]
     public class Plugin : BaseUnityPlugin
     {
+        /// <summary>
+        /// Unique plugin ID. BepInEx, the Mod Manager and Harmony use it to tell mods apart.
+        /// Also the name of the settings file in BepInEx/config.
+        /// </summary>
         public const string Guid = "com.Venus.dressmaker.autosew";
         public const string Name = "Dressmaker Auto Sew";
+        /// <summary>
+        /// Shown in the Mod Manager and the log. Bump it for every release.
+        /// </summary>
         public const string Version = "1.6.1";
 
+        /// <summary>
+        /// Auto sew speed range: 0 is the sewing machine's slowest lever position, 1 its fastest.
+        /// </summary>
         public const float SpeedMin = 0f;
         public const float SpeedMax = 1f;
 
+        /// <summary>
+        /// The one running Plugin object, so static code can reach it.
+        /// </summary>
         public static Plugin Instance { get; private set; }
+        /// <summary>
+        /// Writes to BepInEx/LogOutput.log. Use LogDebug for detail, LogInfo for normal events,
+        /// LogWarning and LogError for problems.
+        /// </summary>
         public static ManualLogSource Log { get; private set; }
 
+        /// <summary>
+        /// Settings stored in the .cfg file. The Automation window in the pause menu edits the same entries.
+        /// </summary>
         public static ConfigEntry<bool> EnabledEntry { get; private set; }
         public static ConfigEntry<float> SpeedEntry { get; private set; }
         public static ConfigEntry<bool> MeasureEntry { get; private set; }
         public static ConfigEntry<bool> MannequinEntry { get; private set; }
         public static ConfigEntry<bool> PlaceEntry { get; private set; }
 
+        /// <summary>
+        /// Quick read-only switches: true when that feature is turned on.
+        /// </summary>
         public static bool Enabled => EnabledEntry != null && EnabledEntry.Value;
         public static bool MeasureEnabled => MeasureEntry != null && MeasureEntry.Value;
         public static bool MannequinEnabled => MannequinEntry != null && MannequinEntry.Value;
         public static bool PlaceEnabled => PlaceEntry != null && PlaceEntry.Value;
 
+        /// <summary>
+        /// The current auto sew speed. Kept in memory and only saved to the .cfg every 0.35 s
+        /// (see FlushSpeed), because the mouse wheel can change it many times per second.
+        /// </summary>
         static float _speed = 1f;
         static bool _speedDirty;
         static float _nextSpeedSave;
@@ -40,6 +74,12 @@ namespace DressmakerAutoSew
 
         public static float Speed => _speed;
 
+        /// <summary>
+        /// Runs once at startup. Binds every setting (name, default, description), reacts to setting
+        /// changes (turning a feature off cancels it right away), and installs the Harmony hooks.
+        /// Every game type and method is looked up by name first. If one is missing, only that feature
+        /// is skipped with a log message, instead of the whole mod failing.
+        /// </summary>
         void Awake()
         {
             Instance = this;
@@ -166,8 +206,14 @@ namespace DressmakerAutoSew
             Log.LogInfo("Auto sew is ready. Open the pause menu for the switches.");
         }
 
+        /// <summary>
+        /// True while an F4 pass (auto measure or auto mannequin) is running.
+        /// </summary>
         public static bool ManualAutomationActive => AutoMeasure.IsActive || AutoMannequin.IsActive;
 
+        /// <summary>
+        /// Stops both F4 features and updates the Automation window.
+        /// </summary>
         public static void StopManualAutomation()
         {
             AutoMeasure.Cancel();
@@ -175,6 +221,11 @@ namespace DressmakerAutoSew
             PauseMenuOptions.Refresh();
         }
 
+        /// <summary>
+        /// What F4 does: stops a running pass, or starts the right one for the current screen
+        /// (measuring a client, or the mannequin). Only starts while the game is unpaused and the
+        /// measuring screen is active, and only if that feature is switched on.
+        /// </summary>
         public static void ToggleManualAutomation()
         {
             try
@@ -208,6 +259,11 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Unity calls this every frame. Checks for F4 every frame. Four times a second it also refreshes
+        /// the Automation window and lets AutoMeasure and AutoMannequin check that their session is still
+        /// valid (Maintain), stopping them cleanly if anything throws.
+        /// </summary>
         void Update()
         {
             // Poll every frame, before the slower session maintenance check.
@@ -231,6 +287,9 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Runs when the plugin is unloaded: stops every feature and restores the game's state.
+        /// </summary>
         void OnDestroy()
         {
             AutoSew.Cancel();
@@ -242,11 +301,19 @@ namespace DressmakerAutoSew
                 Instance = null;
         }
 
+        /// <summary>
+        /// Unity calls this every frame after all normal Update calls. AutoSew sets the sewing hand's pose
+        /// here, so the game's own hand code can't overwrite it in the same frame.
+        /// </summary>
         void LateUpdate()
         {
             AutoSew.LateTick();
         }
 
+        /// <summary>
+        /// Installs one Harmony hook. A prefix runs before the game's method (and can skip it by returning
+        /// false); a postfix runs after it. A failed hook is logged instead of stopping the mod.
+        /// </summary>
         static void TryPatch(Harmony harmony, System.Reflection.MethodBase method, HarmonyMethod prefix = null, HarmonyMethod postfix = null)
         {
             try
@@ -259,30 +326,47 @@ namespace DressmakerAutoSew
             }
         }
 
+        /// <summary>
+        /// Setters used by the Automation window. They only write when the value really changes,
+        /// which avoids triggering SettingChanged in a loop.
+        /// </summary>
         public static void SetEnabled(bool value)
         {
             if (EnabledEntry != null && EnabledEntry.Value != value)
                 EnabledEntry.Value = value;
         }
 
+        /// <summary>
+        /// Turns auto measure on or off (from the Automation window).
+        /// </summary>
         public static void SetMeasureEnabled(bool value)
         {
             if (MeasureEntry != null && MeasureEntry.Value != value)
                 MeasureEntry.Value = value;
         }
 
+        /// <summary>
+        /// Turns auto mannequin on or off (from the Automation window).
+        /// </summary>
         public static void SetMannequinEnabled(bool value)
         {
             if (MannequinEntry != null && MannequinEntry.Value != value)
                 MannequinEntry.Value = value;
         }
 
+        /// <summary>
+        /// Turns pattern layout on or off (from the Automation window).
+        /// </summary>
         public static void SetPlaceEnabled(bool value)
         {
             if (PlaceEntry != null && PlaceEntry.Value != value)
                 PlaceEntry.Value = value;
         }
 
+        /// <summary>
+        /// Changes the speed by a small amount (W/S keys, mouse wheel). Saving can be delayed to avoid
+        /// writing the .cfg file every frame.
+        /// </summary>
         public static void NudgeSpeed(float delta, bool saveNow)
         {
             if (Math.Abs(delta) < 0.0001f)
@@ -294,6 +378,9 @@ namespace DressmakerAutoSew
             PauseMenuOptions.Refresh();
         }
 
+        /// <summary>
+        /// Sets the speed to an exact value (the slider). Saves now or marks it to be saved soon.
+        /// </summary>
         public static void SetSpeed(float value, bool saveNow)
         {
             _speed = ClampSpeed(value);
@@ -304,6 +391,9 @@ namespace DressmakerAutoSew
                 PauseMenuOptions.Refresh();
         }
 
+        /// <summary>
+        /// Writes a changed speed to the .cfg file, at most once every 0.35 s unless forced.
+        /// </summary>
         public static void FlushSpeed(bool force)
         {
             if (!_speedDirty || SpeedEntry == null)
@@ -316,6 +406,9 @@ namespace DressmakerAutoSew
                 SpeedEntry.Value = _speed;
         }
 
+        /// <summary>
+        /// Keeps a speed value inside SpeedMin..SpeedMax. Invalid numbers (NaN, infinity) become the maximum.
+        /// </summary>
         public static float ClampSpeed(float value)
         {
             if (float.IsNaN(value) || float.IsInfinity(value))
