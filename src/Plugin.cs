@@ -54,6 +54,7 @@ namespace DressmakerAutoSew
         public static ConfigEntry<bool> MeasureEntry { get; private set; }
         public static ConfigEntry<bool> MannequinEntry { get; private set; }
         public static ConfigEntry<bool> PlaceEntry { get; private set; }
+        public static ConfigEntry<bool> MlDataEntry { get; private set; }
 
         /// <summary>
         /// Quick read-only switches: true when that feature is turned on.
@@ -114,7 +115,11 @@ namespace DressmakerAutoSew
                 "PlaceEnabled",
                 false,
                 "When this is on, the cutting room sidebar gets a Layout tab beside Patterns and Fabric. Add the fabrics you want, choose the patterns for each, then press Solve.");
-
+            MlDataEntry = Config.Bind(
+                "Developer",
+                "CollectMLData",
+                false,
+                "For development only. when on, pressing F9 runs the machine-learning data export.");
             _speed = ClampSpeed(SpeedEntry.Value);
             EnabledEntry.SettingChanged += (_, __) =>
             {
@@ -269,6 +274,8 @@ namespace DressmakerAutoSew
             // Poll every frame, before the slower session maintenance check.
             if (Input.GetKeyDown(KeyCode.F4))
                 ToggleManualAutomation();
+            if (MlDataEntry.Value && Input.GetKeyDown(KeyCode.F9))
+                MlData.Run();
             if (Time.unscaledTime < _nextMaintenance)
                 return;
             _nextMaintenance = Time.unscaledTime + 0.25f;
