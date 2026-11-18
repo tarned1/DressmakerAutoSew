@@ -28,7 +28,7 @@ namespace DressmakerAutoSew
         /// <summary>
         /// Shown in the Mod Manager and the log. Bump it for every release.
         /// </summary>
-        public const string Version = "1.6.1";
+        public const string Version = "1.6.2";
 
         /// <summary>
         /// Auto sew speed range: 0 is the sewing machine's slowest lever position, 1 its fastest.
