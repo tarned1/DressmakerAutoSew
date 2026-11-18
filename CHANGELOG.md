@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.2
+
+- Fixed: pattern piece names in the Layout tab were cut off ("Bodice S..."). Names now use the whole label, long names shrink slightly to fit, and fabric names show in full.
+
 ## 1.6.1
 
 - Fixed: Solve stopped with "exceeds the supported placement grid size" on very long fabric. AutoSew now only plans on the part of the fabric that is open on the table.

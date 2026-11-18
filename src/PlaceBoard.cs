@@ -330,6 +330,14 @@ namespace DressmakerAutoSew
                 property.SetValue(component, value, null);
         }
 
+        static float GetFloatProperty(Component component, string name)
+        {
+            PropertyInfo property = component.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public);
+            if (property != null && property.CanRead && property.PropertyType == typeof(float))
+                return (float)property.GetValue(component, null);
+            return 0f;
+        }
+
         static void SetEnumProperty(Component component, string name, string value)
         {
             PropertyInfo property = component.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public);
@@ -662,13 +670,17 @@ namespace DressmakerAutoSew
         {
             object piece = panel;
             string label = PieceLabel(piece);
-            Row(template, null, "    " + AutoPlace.NameOf(piece), label, true, null, () =>
+            Row(template, null, AutoPlace.NameOf(piece), label, true, null, () =>
             {
                 AutoPlace.SetPatternFabric(piece, NextAssignment(AutoPlace.PatternFabric(piece)));
                 _stamp = "";
             }, null, label);
-        }
 
+            var click = _list.GetChild(_list.childCount - 1).GetComponent<LayoutRowClick>();
+            if (click != null)
+                click.WideTitle = true;
+        }
+        
         static void CycleGroup(List<object> group)
         {
             object current = null;
@@ -1208,9 +1220,48 @@ namespace DressmakerAutoSew
                 rect.offsetMax = new Vector2(-8f, -2f);
                 rect.SetAsLastSibling();
                 ShowHover(rect.gameObject, click.Hover);
+                if (click.WideTitle)
+                    WidenTitle(row);
             }
         }
+        
+        // Piece rows: the piece name gets the whole tab, left-aligned, and long names are
+        // shrunk a little so they fit inside it. Without this, names get cut off ("Bodice S...").
+        static void WidenTitle(GameObject row)
+        {
+            var title = FirstText(row);
+            var rowRect = row.transform as RectTransform;
+            var titleRect = title == null ? null : title.transform as RectTransform;
+            if (rowRect == null || titleRect == null)
+                return;
+            float width = rowRect.rect.width;
+            if (width < 40f)
+                return;
 
+            var corners = new Vector3[4];
+            titleRect.GetWorldCorners(corners);
+            float titleLeft = rowRect.InverseTransformPoint(corners[0]).x - rowRect.rect.xMin;
+            float titleRight = rowRect.InverseTransformPoint(corners[2]).x - rowRect.rect.xMin;
+            float start = titleLeft + 4f;
+
+            titleRect.SetParent(row.transform, false);
+            var element = titleRect.GetComponent<LayoutElement>() ?? titleRect.gameObject.AddComponent<LayoutElement>();
+            element.ignoreLayout = true;
+            titleRect.anchorMin = Vector2.zero;
+            titleRect.anchorMax = Vector2.one;
+            titleRect.offsetMin = new Vector2(start, 2f);
+            titleRect.offsetMax = new Vector2(titleRight - width, -2f);
+            SetEnumProperty(title, "alignment", "Left");
+            SetEnumProperty(title, "overflowMode", "Ellipsis");
+            SetBoolProperty(title, "enableAutoSizing", false);
+
+            float available = titleRight - start;
+            float needed = GetFloatProperty(title, "preferredWidth");
+            float size = GetFloatProperty(title, "fontSize");
+            if (needed > available && needed > 0f && size > 0f)
+                SetFloatProperty(title, "fontSize", Mathf.Max(size * available / needed, size * 0.7f));
+        }
+        
         static void FreezeRows()
         {
             if (_list == null)
@@ -1348,6 +1399,7 @@ namespace DressmakerAutoSew
         public Action Left;
         public Action Right;
         public string Hover;
+        public bool WideTitle;
 
         public void OnPointerClick(PointerEventData eventData)
         {
