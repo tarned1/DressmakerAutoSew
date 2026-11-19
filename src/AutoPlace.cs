@@ -266,6 +266,7 @@ namespace DressmakerAutoSew
             try
             {
                 PlaceBoard.Tick(__instance);
+                CutAll.EnsureButton(__instance);
             }
             catch (Exception ex)
             {

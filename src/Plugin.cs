@@ -213,6 +213,8 @@ namespace DressmakerAutoSew
             // Poll every frame, before the slower session maintenance check.
             if (Input.GetKeyDown(KeyCode.F4))
                 ToggleManualAutomation();
+            if (Input.GetKeyDown(KeyCode.F7))
+                PlaceAll.Run();
             if (Time.unscaledTime < _nextMaintenance)
                 return;
             _nextMaintenance = Time.unscaledTime + 0.25f;
