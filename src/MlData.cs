@@ -94,6 +94,7 @@ namespace DressmakerAutoSew
                 var made = generate.Invoke(null, new object[] { source, measurements, type }) as Mesh;
                 if (made == null)
                     continue;
+                AddSeamAllowance(made);
 
                 float difference = MaxDifference(real.vertices, made.vertices);
                 tested++;
@@ -106,6 +107,18 @@ namespace DressmakerAutoSew
             }
 
             Plugin.Log.LogInfo("Generator check: " + matched + " of " + tested + " pieces match.");
+        }
+        
+        // Adds the seam allowance strip around a generated piece, the same way the game does
+        // in PatternPanel.CreatePatternAddons.
+        static void AddSeamAllowance(Mesh mesh)
+        {
+            var edgeHelpers = AccessTools.TypeByName("EdgeHelpers");
+            object edges = AccessTools.Method(edgeHelpers, "GetEdges").Invoke(null, new object[] { mesh.triangles });
+            object outline = AccessTools.Method(edgeHelpers, "FindBoundary").Invoke(null, new object[] { edges });
+            object ordered = AccessTools.Method(edgeHelpers, "SortEdges").Invoke(null, new object[] { outline, mesh.vertices });
+            AccessTools.Method(AccessTools.TypeByName("MeshHelpers"), "ExtendMeshWithSeamAllowance")
+                .Invoke(null, new object[] { mesh, ordered });
         }
 
         // Largest distance between matching points of two shapes. 0 means identical.
