@@ -16,15 +16,10 @@ namespace DressmakerAutoSew
         const string ToggleName = "AutoSewToggle";
         const string SliderName = "AutoSewSpeedSlider";
 
-        static readonly string[] SwitchNames = { "AutoMeasureToggle", "AutoMannequinToggle", "PlacePatternsToggle" };
-        static readonly string[] SwitchLabels = { "Auto measure (F4)", "Auto mannequin (F4)", "Place patterns" };
-
-        static GameObject _stopRow;
         static Toggle _toggle;
         static Slider _slider;
         static GameObject _sliderRow;
         static GameObject _panel;
-        static readonly Toggle[] _switches = new Toggle[3];
         static bool _refreshing;
         static bool _buttonPlaced;
 
@@ -66,13 +61,6 @@ namespace DressmakerAutoSew
                     _slider.wholeNumbers = false;
                     _slider.SetValueWithoutNotify(Plugin.Speed);
                 }
-                for (int i = 0; i < _switches.Length; i++)
-                {
-                    if (_switches[i] != null)
-                        _switches[i].SetIsOnWithoutNotify(SwitchValue(i));
-                }
-                if (_stopRow != null)
-                    _stopRow.SetActive(Plugin.ManualAutomationActive);
                 ApplySpeedVisibility();
             }
             finally
@@ -294,18 +282,6 @@ namespace DressmakerAutoSew
             {
                 StripPersistent(button.onClick);
                 button.onClick.AddListener(Close);
-                if (_sliderRow != null)
-                {
-                    _stopRow = UnityEngine.Object.Instantiate(button.gameObject, _sliderRow.transform.parent);
-                    _stopRow.name = "AutoSewStopManual";
-                    AdoptRow(_stopRow);
-                    var stop = _stopRow.GetComponent<Button>() ?? _stopRow.GetComponentInChildren<Button>(true);
-                    StripPersistent(stop.onClick);
-                    stop.onClick.AddListener(Plugin.StopManualAutomation);
-                    ForceLabel(_stopRow, "Stop (F4)", null);
-                    StyleRow(_stopRow);
-                    _stopRow.SetActive(false);
-                }
             }
         }
 
@@ -459,26 +435,15 @@ namespace DressmakerAutoSew
             _toggle = BuildToggle(content, assist, ToggleName, "Auto sew", value => Plugin.SetEnabled(value));
             if (music != null)
                 _slider = BuildSlider(content, music);
-            for (int i = 0; i < SwitchNames.Length; i++)
-            {
-                int index = i;
-                _switches[i] = BuildToggle(content, assist, SwitchNames[i], SwitchLabels[i], value => SetSwitch(index, value));
-            }
         }
 
         static void BindExisting(Transform panel)
         {
-            _stopRow = FindNamed(panel, "AutoSewStopManual")?.gameObject;
             Transform toggleRow = FindNamed(panel, ToggleName);
             _toggle = toggleRow != null ? toggleRow.GetComponent<Toggle>() ?? toggleRow.GetComponentInChildren<Toggle>(true) : null;
             Transform sliderRow = FindNamed(panel, SliderName);
             _sliderRow = sliderRow != null ? sliderRow.gameObject : null;
             _slider = sliderRow != null ? sliderRow.GetComponent<Slider>() ?? sliderRow.GetComponentInChildren<Slider>(true) : null;
-            for (int i = 0; i < SwitchNames.Length; i++)
-            {
-                Transform row = FindNamed(panel, SwitchNames[i]);
-                _switches[i] = row != null ? row.GetComponent<Toggle>() ?? row.GetComponentInChildren<Toggle>(true) : null;
-            }
         }
 
         static Toggle BuildToggle(Transform parent, Toggle source, string name, string label, UnityAction<bool> changed)
@@ -799,25 +764,6 @@ namespace DressmakerAutoSew
                 fitter.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
         }
 
-        static bool SwitchValue(int index)
-        {
-            if (index == 0)
-                return Plugin.MeasureEnabled;
-            if (index == 1)
-                return Plugin.MannequinEnabled;
-            return Plugin.PlaceEnabled;
-        }
-
-        static void SetSwitch(int index, bool value)
-        {
-            if (index == 0)
-                Plugin.SetMeasureEnabled(value);
-            else if (index == 1)
-                Plugin.SetMannequinEnabled(value);
-            else
-                Plugin.SetPlaceEnabled(value);
-        }
-
         static GameObject CloneInto(Component source, Transform parent, string name)
         {
             Transform row = source.transform.parent;
@@ -900,7 +846,7 @@ namespace DressmakerAutoSew
             return height;
         }
 
-        static void ForceLabel(GameObject root, string label, Transform except)
+        public static void ForceLabel(GameObject root, string label, Transform except)
         {
             foreach (var component in root.GetComponentsInChildren<Component>(true))
             {

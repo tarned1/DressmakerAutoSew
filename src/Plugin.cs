@@ -14,7 +14,7 @@ namespace DressmakerAutoSew
     {
         public const string Guid = "com.Venus.dressmaker.autosew";
         public const string Name = "Dressmaker Auto Sew";
-        public const string Version = "1.6.2";
+        public const string Version = "2.0.0";
 
         public const float SpeedMin = 0f;
         public const float SpeedMax = 1f;
@@ -24,14 +24,8 @@ namespace DressmakerAutoSew
 
         public static ConfigEntry<bool> EnabledEntry { get; private set; }
         public static ConfigEntry<float> SpeedEntry { get; private set; }
-        public static ConfigEntry<bool> MeasureEntry { get; private set; }
-        public static ConfigEntry<bool> MannequinEntry { get; private set; }
-        public static ConfigEntry<bool> PlaceEntry { get; private set; }
 
         public static bool Enabled => EnabledEntry != null && EnabledEntry.Value;
-        public static bool MeasureEnabled => MeasureEntry != null && MeasureEntry.Value;
-        public static bool MannequinEnabled => MannequinEntry != null && MannequinEntry.Value;
-        public static bool PlaceEnabled => PlaceEntry != null && PlaceEntry.Value;
 
         static float _speed = 1f;
         static bool _speedDirty;
@@ -59,46 +53,11 @@ namespace DressmakerAutoSew
                     "Automation-menu speed under Auto sew. 0 is the sewing machine's slowest lever, 1 is its fastest.",
                     new AcceptableValueRange<float>(SpeedMin, SpeedMax)));
 
-            MeasureEntry = Config.Bind(
-                "Auto Sew",
-                "MeasureEnabled",
-                false,
-                "When enabled, press F4 in the measuring screen to start or stop. The measuring tape is taken out first, then held on the bust, waist, and hips until the paper records them. It does not press confirm. The same switch is in the pause menu's Automation menu.");
-            MannequinEntry = Config.Bind(
-                "Auto Sew",
-                "MannequinEnabled",
-                false,
-                "When enabled, press F4 in the mannequin screen to start or stop. The measuring tape is taken out first, then the gears turn until bust, waist, and hips match the measurements. Confirm stays for you. The same switch is in the pause menu's Automation menu.");
-            PlaceEntry = Config.Bind(
-                "Auto Sew",
-                "PlaceEnabled",
-                false,
-                "When this is on, the cutting room sidebar gets a Layout tab beside Patterns and Fabric. Add the fabrics you want, choose the patterns for each, then press Solve.");
-
             _speed = ClampSpeed(SpeedEntry.Value);
             EnabledEntry.SettingChanged += (_, __) =>
             {
                 if (!Enabled)
                     AutoSew.Cancel();
-                PauseMenuOptions.Refresh();
-            };
-            MeasureEntry.SettingChanged += (_, __) =>
-            {
-                if (!MeasureEnabled)
-                    AutoMeasure.Cancel();
-                PauseMenuOptions.Refresh();
-            };
-            MannequinEntry.SettingChanged += (_, __) =>
-            {
-                if (!MannequinEnabled)
-                    AutoMannequin.Cancel();
-                PauseMenuOptions.Refresh();
-            };
-            PlaceEntry.SettingChanged += (_, __) => PauseMenuOptions.Refresh();
-            SpeedEntry.SettingChanged += (_, __) =>
-            {
-                if (!_speedDirty)
-                    _speed = ClampSpeed(SpeedEntry.Value);
                 PauseMenuOptions.Refresh();
             };
 
@@ -117,7 +76,10 @@ namespace DressmakerAutoSew
             var measure = AccessTools.TypeByName("PersonMeasurer");
             var measureUpdate = measure != null ? AccessTools.Method(measure, "Update") : null;
             if (measureUpdate != null)
+            {
                 TryPatch(harmony, measureUpdate, postfix: new HarmonyMethod(typeof(AutoMeasure), nameof(AutoMeasure.Tick)));
+                TryPatch(harmony, measureUpdate, postfix: new HarmonyMethod(typeof(MeasureButton), nameof(MeasureButton.Tick)));
+            }
             else
                 Log.LogWarning("PersonMeasurer was not found. Auto measure cannot run.");
 
@@ -134,7 +96,14 @@ namespace DressmakerAutoSew
                 TryPatch(harmony, cuttingUpdate, postfix: new HarmonyMethod(typeof(AutoPlace), nameof(AutoPlace.Tick)));
             else
                 Log.LogWarning("CuttingRoom was not found. Pattern placement cannot run.");
-
+            
+            var mannequinScene = AccessTools.TypeByName("MannequinScene");
+            var mannequinUpdate = mannequinScene != null ? AccessTools.Method(mannequinScene, "Update") : null;
+            if (mannequinUpdate != null)
+                TryPatch(harmony, mannequinUpdate, postfix: new HarmonyMethod(typeof(PlaceAll), nameof(PlaceAll.Tick)));
+            else
+                Log.LogWarning("MannequinScene was not found. Place all cannot run.");
+            
             var sidebar = AccessTools.TypeByName("SidebarInventory");
             var setTab = sidebar != null ? AccessTools.Method(sidebar, "SetTab") : null;
             var setTabs = sidebar != null ? AccessTools.Method(sidebar, "SetAvailableTabs") : null;
@@ -192,29 +161,22 @@ namespace DressmakerAutoSew
                     return;
                 bool mannequin = GameAccess.Bool(scene, "IsMannequinScene");
                 var measurer = GameAccess.Member(scene, "ActiveMeasurer") as MonoBehaviour;
-                if (mannequin ? MannequinEnabled : MeasureEnabled)
-                {
-                    StopManualAutomation();
-                    bool started = mannequin ? AutoMannequin.Start(scene) : AutoMeasure.Start(measurer);
-                    if (started)
-                        Log.LogInfo("F4 started auto " + (mannequin ? "mannequin." : "measure."));
-                    PauseMenuOptions.Refresh();
-                }
+                StopManualAutomation();
+                bool started = mannequin ? AutoMannequin.Start(scene) : AutoMeasure.Start(measurer);
+                if (started)
+                    Log.LogInfo("Started auto " + (mannequin ? "mannequin." : "measure."));
+                PauseMenuOptions.Refresh();
             }
             catch (Exception ex)
             {
                 StopManualAutomation();
-                Log.LogWarning("F4 automation stopped: " + ex.GetBaseException().Message);
+                Log.LogWarning("Auto measure/mannequin stopped: " + ex.GetBaseException().Message);
             }
         }
 
         void Update()
         {
             // Poll every frame, before the slower session maintenance check.
-            if (Input.GetKeyDown(KeyCode.F4))
-                ToggleManualAutomation();
-            if (Input.GetKeyDown(KeyCode.F7))
-                PlaceAll.Run();
             if (Time.unscaledTime < _nextMaintenance)
                 return;
             _nextMaintenance = Time.unscaledTime + 0.25f;
@@ -265,35 +227,6 @@ namespace DressmakerAutoSew
         {
             if (EnabledEntry != null && EnabledEntry.Value != value)
                 EnabledEntry.Value = value;
-        }
-
-        public static void SetMeasureEnabled(bool value)
-        {
-            if (MeasureEntry != null && MeasureEntry.Value != value)
-                MeasureEntry.Value = value;
-        }
-
-        public static void SetMannequinEnabled(bool value)
-        {
-            if (MannequinEntry != null && MannequinEntry.Value != value)
-                MannequinEntry.Value = value;
-        }
-
-        public static void SetPlaceEnabled(bool value)
-        {
-            if (PlaceEntry != null && PlaceEntry.Value != value)
-                PlaceEntry.Value = value;
-        }
-
-        public static void NudgeSpeed(float delta, bool saveNow)
-        {
-            if (Math.Abs(delta) < 0.0001f)
-                return;
-            _speed = ClampSpeed(_speed + delta);
-            _speedDirty = true;
-            if (saveNow)
-                FlushSpeed(force: true);
-            PauseMenuOptions.Refresh();
         }
 
         public static void SetSpeed(float value, bool saveNow)

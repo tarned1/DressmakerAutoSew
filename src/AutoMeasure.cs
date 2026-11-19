@@ -18,7 +18,7 @@ namespace DressmakerAutoSew
 
         public static bool Start(MonoBehaviour measurer)
         {
-            if (!Plugin.MeasureEnabled || measurer == null || GameAccess.Member(measurer, "paper") == null)
+            if (measurer == null || GameAccess.Member(measurer, "paper") == null)
                 return false;
             Cancel();
             _measurer = measurer;
@@ -48,7 +48,7 @@ namespace DressmakerAutoSew
 
         public static void Tick(MonoBehaviour __instance)
         {
-            if (Time.timeScale <= 0f && Plugin.MeasureEnabled)
+            if (Time.timeScale <= 0f)
                 return;
             try
             {
@@ -65,12 +65,6 @@ namespace DressmakerAutoSew
 
         static void TickSafe(MonoBehaviour measurer)
         {
-            if (!Plugin.MeasureEnabled)
-            {
-                Cancel();
-                return;
-            }
-
             if (!_requested)
                 return;
 
@@ -264,11 +258,6 @@ namespace DressmakerAutoSew
         // Called by the plugin even when the game's measurer no longer updates.
         public static void Maintain()
         {
-            if (!Plugin.MeasureEnabled)
-            {
-                Cancel();
-                return;
-            }
             if (_paper == null)
                 return;
             object scene = GameAccess.Find("MeasuringScene");

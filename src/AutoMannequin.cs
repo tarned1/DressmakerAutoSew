@@ -20,7 +20,7 @@ namespace DressmakerAutoSew
 
         public static bool Start(object scene)
         {
-            if (!Plugin.MannequinEnabled || scene == null || !GameAccess.Bool(scene, "IsMannequinScene"))
+            if (scene == null || !GameAccess.Bool(scene, "IsMannequinScene"))
                 return false;
             var gears = GameAccess.Member(scene, "gears") as Array;
             MonoBehaviour gear = null;
@@ -84,12 +84,6 @@ namespace DressmakerAutoSew
 
         static void Tick(MonoBehaviour gear)
         {
-            if (!Plugin.MannequinEnabled)
-            {
-                Cancel();
-                return;
-            }
-
             if (!_requested || _done)
                 return;
 
@@ -230,11 +224,6 @@ namespace DressmakerAutoSew
 
         public static void Maintain()
         {
-            if (!Plugin.MannequinEnabled)
-            {
-                Cancel();
-                return;
-            }
             if (_paper == null)
                 return;
             object scene = GameAccess.Find("MeasuringScene");

@@ -130,7 +130,7 @@ namespace DressmakerAutoSew
             }
         }
         
-        static MonoBehaviour Runner()
+        public static MonoBehaviour Runner()
         {
             if (_runner == null)
             {

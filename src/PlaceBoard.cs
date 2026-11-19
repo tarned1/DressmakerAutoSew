@@ -39,7 +39,7 @@ namespace DressmakerAutoSew
 
         public static void Tick(MonoBehaviour room)
         {
-            if (!Plugin.PlaceEnabled || !GameAccess.SceneIs("CuttingRoom"))
+            if (!GameAccess.SceneIs("CuttingRoom"))
             {
                 if (_open || _seeded || (_tab != null && _tab.activeSelf))
                 {
@@ -89,7 +89,7 @@ namespace DressmakerAutoSew
 
         public static void TabsChanged()
         {
-            bool show = Plugin.PlaceEnabled && GameAccess.SceneIs("CuttingRoom");
+            bool show = GameAccess.SceneIs("CuttingRoom");
             if (_tab != null)
                 _tab.SetActive(show);
             if (!show)

@@ -1,6 +1,6 @@
 # AutoSew for Dressmaker
 
-A BepInEx mod for the Unity game [Dressmaker](https://store.steampowered.com/app/4019220/) that automates the repetitive parts of dressmaking: sewing seams, measuring clients, sizing the mannequin, and laying pattern pieces out on fabric.
+A BepInEx mod for the Unity game [Dressmaker](https://store.steampowered.com/app/4019220/) that automates the repetitive parts of dressmaking: sewing seams, measuring clients, sizing the mannequin, laying pattern pieces out on fabric, cutting them out, and placing them on the mannequin.
 
 **Download:** [Nexus Mods](https://www.nexusmods.com/dressmaker/mods/56) · **Changelog:** [CHANGELOG.md](CHANGELOG.md)
 
@@ -11,11 +11,13 @@ A BepInEx mod for the Unity game [Dressmaker](https://store.steampowered.com/app
 | Feature | What it does |
 |---|---|
 | **Auto sew** | Feeds the fabric along the stitch line by itself, with the sewing animation, and finishes every seam at 100% quality. Speed is adjustable. |
-| **Auto measure** | Press F4 on the measuring screen: the tape is placed on the bust, waist and hips, and each value is recorded. |
-| **Auto mannequin** | Press F4 on the mannequin screen: the gears turn until the form matches the client's measurements. Confirm stays with the player. |
+| **Auto measure** | A button on the measuring card: the tape is placed on the bust, waist and hips, and each value is recorded. |
+| **Auto mannequin** | The same button on the mannequin-sizing card: the gears turn until the form matches the client's measurements. Confirm stays with the player. |
 | **Pattern layout** | A Layout tab in the cutting room places every pattern piece on up to three fabrics, with correct grain and no overlaps, then packs them tightly. |
+| **Cut all** | A toolbar button in the cutting room cuts every placed piece at once, with the game's scissors animation, and sends each piece back to the pattern menu as its cut finishes. |
+| **Place all** | A button on the mannequin screen puts every cut piece on the mannequin in about 3 seconds, each one coming out of the pattern menu. |
 
-All switches are in the pause menu under **Automation**.
+Auto sew and its speed are in the pause menu under **Automation**. Everything else is a button on the screen where it's used.
 
 ## Installation
 
@@ -40,7 +42,9 @@ AutoSew is a BepInEx plugin. It uses **Harmony** to hook into the game's own met
 | `SewingController.Update` | prefix (replaces the game's update while auto sew runs) | Auto sew |
 | `PersonMeasurer.Update` | postfix | Auto measure |
 | `Gear.Update` | postfix | Auto mannequin |
-| `CuttingRoom.Update` | postfix | Pattern layout and the Layout tab |
+| `CuttingRoom.Update` | postfix | Pattern layout, the Layout tab and the Cut all button |
+| `MannequinScene.Update` | postfix | The Place all button |
+| `PersonMeasurer.Update` | postfix | The Auto measure / Auto mannequin button |
 | `PauseMenu.OnEnable` / `Hide` | postfix | The Automation window |
 
 Every hook is installed defensively: if a game update renames a method, that feature logs a warning instead of crashing the mod.
@@ -87,13 +91,17 @@ The game's own files are not part of this repository.
 
 ```
 src/
-  Plugin.cs            entry point: settings, Harmony hooks, F4 key
+  Plugin.cs            entry point: settings and Harmony hooks
   GameAccess.cs        reflection helpers for the game's fields and methods
   AutoSew.cs           auto sew
   AutoMeasure.cs       auto measure
   AutoMannequin.cs     auto mannequin
   AutoPlace.cs         pattern layout: solver, placement and snap
   PlaceBoard.cs        the Layout tab in the cutting room
+  CutAll.cs            Cut all and its toolbar button
+  PlaceAll.cs          Place all and its mannequin-screen button
+  MeasureButton.cs     the button on the measuring card
+  AutoSewTooltip.cs    hover text for AutoSew's buttons
   PauseMenuOptions.cs  the Automation window in the pause menu
 vortex/                Vortex extension for Dressmaker
 ```
@@ -101,7 +109,6 @@ vortex/                Vortex extension for Dressmaker
 ## Roadmap
 
 - **Refactor** (in progress on the `refactor` branch): split `AutoPlace.cs` into solver, placement and UI parts, keep all game field names in one place, and add tests for the solver.
-- **2.0:** Cut all, and placing cut pieces on the mannequin.
 
 ## Credits
 

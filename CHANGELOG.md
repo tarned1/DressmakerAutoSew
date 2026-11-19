@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.0.0 – Buttons for everything
+
+### New
+- **Cut all.** A new button in the cutting room's top toolbar, with crossed scissors, cuts every piece you placed on the fabric at once, with the game's own scissors animation. Each piece goes back to the pattern menu as soon as its own cut finishes. Pieces the game won't cut (overlapping, or off the fabric) stay where they are.
+- **Place all.** A new button on the mannequin screen, next to the mannequin colour button, puts every cut piece on the mannequin. Each piece comes out of the pattern menu onto the dress form, and a whole dress takes about 3 seconds, however many pieces it has.
+- **Auto measure and Auto mannequin buttons.** The measuring card now has a button above Confirm. It says Auto measure when measuring a client and Auto mannequin when sizing the dress form. While one is running, it says Stop.
+
+### Changed
+- F4 is no longer used. Use the button on the measuring card instead.
+- The Automation window now has only Auto sew and Speed. Auto measure, Auto mannequin and Place patterns no longer need switching on: the Layout tab is always in the cutting room, and the measuring button is always on the card.
+- The Stop (F4) row in the pause menu is gone. The measuring button's Stop replaces it.
+- The config settings MeasureEnabled, MannequinEnabled and PlaceEnabled are no longer used. If your config file still has them, they are ignored.
+
 ## 1.6.2
 
 - Fixed: pattern piece names in the Layout tab were cut off ("Bodice S..."). Names now use the whole label, long names shrink slightly to fit, and fabric names show in full.
